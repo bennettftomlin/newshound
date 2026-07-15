@@ -7,8 +7,6 @@ import sqlite3
 
 DB_PATH = "last_processed.db"
 
-DB_PATH = "last_processed.db"
-
 def initialize_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -71,8 +69,11 @@ def check_and_alert(feed_url, conn):
         for item in new_items:
             message = f"🚨 NEW CRYPTO ALERT! Title: {item['title']}\nLink: {item['link']}"
             
-            # Send to Slack
-            slack_client.chat_postMessage(text=message) 
+                        # Send alert (Prints if LOCAL_TESTING env var is set)
+            if os.environ.get("LOCAL_TESTING") == "True":
+                print(f"🔌 [TEST MODE MOCK]: {message}")
+            else:
+                slack_client.chat_postMessage(text=message)
 
     if new_items and new_items[-1].get('id'):
         # 4. STATE UPDATE
