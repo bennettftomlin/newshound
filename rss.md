@@ -3,3 +3,9 @@ http://www.sec.gov/rss/litigation/admin.xml
 https://feedproxy.feedly.com/e9521cba-c2ed-4173-b215-4461a48754f2
 http://www.cftc.gov/RSS/RSSENF/rssenf.xml
 http://www.sec.gov/rss/news/press.xml
+https://www.courtlistener.com/feed/search/?type=r&type=r&q=htx&order_by=entry_date_filed+desc&
+https://www.courtlistener.com/feed/search/?type=r&type=r&q=michael+saylor&order_by=entry_date_file&+desc&
+https://www.courtlistener.com/feed/search/?type=r&type=r&q=yuchen+sun&order_by=entry_date_filed+desc&
+https://www.courtlistener.com/docket/73224507/feed/
+https://www.courtlistener.com/docket/69361090/feed/
+https://www.courtlistener.com/docket/71091345/feed/

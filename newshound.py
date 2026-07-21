@@ -4,6 +4,8 @@ from slack_sdk import WebClient
 import os
 from io import StringIO
 import sqlite3
+import time
+import hashlib
 
 DB_PATH = "last_processed.db"
 
@@ -43,15 +45,17 @@ except Exception as e:
 
 def get_keywords():
     with open("keywords.md", encoding='UTF-8') as f:
-        lines = [line.lstrip('ufeff').rstrip() for line in f]
+        lines = [line.lstrip().rstrip() for line in f]
     return lines
 
 def check_and_alert(feed_url, conn):
-    last_processed_guid = get_last_processed_guid_from_db(conn)
+    last_processed_guid = get_last_processed_guid_from_db(conn, feed_url)
     feed = feedparser.parse(feed_url)
     new_items = []
     
     for entry in feed.entries:
+        if entry.get('id') is None:
+            entry.id = hashlib.new('sha256').update(entry.link.encode())
         # 1. STATE CHECK: Skip if already processed
         if str(entry.get('id')) == last_processed_guid:
             continue
@@ -73,18 +77,19 @@ def check_and_alert(feed_url, conn):
             if os.environ.get("LOCAL_TESTING") == "True":
                 print(f"🔌 [TEST MODE MOCK]: {message}")
             else:
-                slack_client.chat_postMessage(text=message)
+                slack_client.chat_postMessage(text=message, channel="#newshound-feed")
+                time.sleep(10)
 
     if new_items and new_items[-1].get('id'):
-        # 4. STATE UPDATE
-        update_last_processed_guid_in_db(conn, new_items[-1]['id'])
+        update_last_processed_guid_in_db(conn, feed_url, new_items[-1]['id'])
 
 def get_rss_feeds():
     with open("rss.md", encoding='UTF-8') as f:
         lines = [line.lstrip('ufeff').rstrip() for line in f]
+        print(lines)
     return lines
 
 
 if __name__ == "__main__":
     for x in get_rss_feeds():
-        check_and_alert(x)
+        check_and_alert(x, initialize_db())

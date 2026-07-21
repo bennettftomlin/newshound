@@ -22,3 +22,18 @@ ADA
 SOL
 Brian Armstrong
 Giancarlo Devasini
+bitfinex
+OKX
+OKex
+trueusd
+ftx
+alameda research
+sbf
+sam bankman-fried
+paolo ardoino
+stablecoin
+donald trump
+justin sun
+yuchen sun
+yuchen "justin" sun
+protos media

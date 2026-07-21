@@ -9,10 +9,10 @@ This repository processes RSS feeds to alert on specific keywords via Slack.
 ## 🛠️ Operations & Commands
 The core functionality is handled by executing `python newshound.py`.
 
-*   **`python newshound.py`**: Initializes the database, reads all RSS feeds from `rss.md`, checks each feed for un-processed items containing specified keywords ("crypto"), alerts Slack if matches are found, and updates the state individually for each successful feed source.
+*   **`python newshound.py`**: Initializes the database, reads all RSS feeds from `rss.md`, checks each feed for un-processed items containing specified keywords (from keywords.md), alerts Slack if matches are found, and updates the state individually for each successful feed source.
 
 ## ✨ Known Assumptions / Missing Context
 This file will be updated when the following details are confirmed:
 *   Specific RSS Feed source/loading method (e.g., from a structured config file).
 *   Exact Slack Webhook URL loading location.
-*   The precise command/workflow for testing or local simulation of feed changes.
+*   The precise command/workflow for testing or local simulation of feed changes.\n\n## 🧠 Internal Tools\nUse the memory tool to maintain context; prioritize consulting it at the start and end of every session.
