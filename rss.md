@@ -6,6 +6,12 @@ http://www.sec.gov/rss/news/press.xml
 https://www.courtlistener.com/feed/search/?type=r&type=r&q=htx&order_by=entry_date_filed+desc&
 https://www.courtlistener.com/feed/search/?type=r&type=r&q=michael+saylor&order_by=entry_date_file&+desc&
 https://www.courtlistener.com/feed/search/?type=r&type=r&q=yuchen+sun&order_by=entry_date_filed+desc&
+https://www.courtlistener.com/feed/search/?type=r&type=r&q=coinbase&order_by=entry_date_filed+desc&
+https://www.courtlistener.com/feed/search/?type=r&type=r&q=bitfinex&order_by=entry_date_filed+desc&
+https://www.courtlistener.com/feed/search/?type=r&type=r&q=usdt&order_by=entry_date_filed+desc&
+https://www.courtlistener.com/feed/search/?type=r&type=r&q=bitcoin&order_by=entry_date_filed+desc&
+https://www.courtlistener.com/feed/search/?type=r&type=r&q=ethereum&order_by=entry_date_filed+desc&
+https://www.courtlistener.com/feed/search/?type=r&type=r&q=poloniex&order_by=entry_date_filed+desc&
 https://www.courtlistener.com/docket/73224507/feed/
 https://www.courtlistener.com/docket/69361090/feed/
 https://www.courtlistener.com/docket/71091345/feed/
