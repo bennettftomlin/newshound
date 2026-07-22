@@ -15,4 +15,7 @@ The core functionality is handled by executing `python newshound.py`.
 This file will be updated when the following details are confirmed:
 *   Specific RSS Feed source/loading method (e.g., from a structured config file).
 *   Exact Slack Webhook URL loading location.
-*   The precise command/workflow for testing or local simulation of feed changes.\n\n## 🧠 Internal Tools\nUse the memory tool to maintain context; prioritize consulting it at the start and end of every session.
+*   The precise command/workflow for testing or local simulation of feed changes.
+
+## 🧠 Internal Tools
+Use the memory tool to maintain context; prioritize consulting it at the start and end of every session.
