@@ -15,3 +15,13 @@ https://www.courtlistener.com/feed/search/?type=r&type=r&q=poloniex&order_by=ent
 https://www.courtlistener.com/docket/73224507/feed/
 https://www.courtlistener.com/docket/69361090/feed/
 https://www.courtlistener.com/docket/71091345/feed/
+https://www.gov.uk/government/organisations/foreign-commonwealth-development-office.atom
+https://www.occ.treas.gov/rss/occ_news.xml
+https://public.govdelivery.com/topics/USFDIC_26/feed.rss
+https://www.federalreserve.gov/feeds/press_all.xml
+https://www.fca.org.uk/news/rss.xml
+https://www.consumerfinance.gov/about-us/newsroom/feed/
+https://www.ecb.europa.eu/rss/press.html
+https://www.whitehouse.gov/news/feed/
+https://trumpstruth.org/feed
+https://ssf.gob.sv/seccion/noticias/feed/

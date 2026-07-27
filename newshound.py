@@ -6,6 +6,7 @@ from io import StringIO
 import sqlite3
 import time
 import hashlib
+import re
 
 DB_PATH = "last_processed.db"
 
@@ -54,13 +55,30 @@ except Exception as e:
     print(f"Warning: Failed to authenticate Slack Client. Ensure SLACK_BOT_TOKEN is set in environment variables. Error: {e}")
 
 def get_keywords():
-    with open("keywords.md", encoding='UTF-8') as f:
-        lines = [line.lstrip().rstrip() for line in f]
-    return lines
+    with open("keywords.md", encoding='utf-8-sig') as f:
+        lines = [line.strip() for line in f]
+    # Blank lines would compile into an alternation branch that matches
+    # everywhere, alerting on every item in every feed.
+    return [line for line in lines if line]
+
+def build_keyword_pattern(keywords):
+    # One alternation so each entry is scanned once. The lookarounds act as
+    # word boundaries that also work for keywords with leading/trailing
+    # punctuation, keeping "ADA" out of "Canada" and "BTC" out of "LGBTQ".
+    alternation = "|".join(re.escape(keyword) for keyword in keywords)
+    return re.compile(rf"(?<!\w)(?:{alternation})(?!\w)", re.IGNORECASE)
+
+def get_entry_text(entry):
+    #"\"\"Everything worth matching against: feeds vary in where they put the detail.\"\"\"
+    parts = [entry.get('title', ''), entry.get('summary', '')]
+    for block in entry.get('content', []) or []:
+        parts.append(block.get('value', '') if isinstance(block, dict) else block)
+    return " ".join(str(part) for part in parts)
 
 def check_and_alert(feed_url, conn):
     processed_ids = get_last_processed_guid_from_db(conn, feed_url)
     feed = feedparser.parse(feed_url)
+    keyword_pattern = build_keyword_pattern(get_keywords())
     new_items = []
 
     for entry in feed.entries:
@@ -73,12 +91,10 @@ def check_and_alert(feed_url, conn):
             continue
 
         # 2. FILTERING: Check the requirement
-        content = str(entry.get('summary', '')).lower()
-        for keyword in get_keywords():
-            if keyword in content:
-                new_items.append(entry)
-                break
-        
+        if keyword_pattern.search(get_entry_text(entry)):
+            new_items.append(entry)
+
+
     if new_items:
         print(f"Found {len(new_items)} matching items.")
         
@@ -98,12 +114,17 @@ def check_and_alert(feed_url, conn):
             update_last_processed_guid_in_db(conn, feed_url, item['id'])
 
 def get_rss_feeds():
-    with open("rss.md", encoding='UTF-8') as f:
-        lines = [line.lstrip('ufeff').rstrip() for line in f]
-        print(lines)
-    return lines
+    # utf-8-sig strips a real BOM; the old lstrip('ufeff') only stripped the
+    # literal characters u, f and e from the start of the URL.
+    with open("rss.md", encoding='utf-8-sig') as f:
+        lines = [line.strip() for line in f]
+    return [line for line in lines if line]
 
 
 if __name__ == "__main__":
-    for x in get_rss_feeds():
-        check_and_alert(x, initialize_db())
+    conn = initialize_db()
+    try:
+        for feed_url in get_rss_feeds():
+            check_and_alert(feed_url, conn)
+    finally:
+        conn.close()

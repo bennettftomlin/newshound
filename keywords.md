@@ -2,11 +2,9 @@ crypto
 cryptocurrency
 bitcoin
 solana
-ether
 ethereum
 BTC
 XRP
-ETH
 USDT
 tether
 coinbase
@@ -19,7 +17,6 @@ usdd
 TRON
 TRX
 ADA
-SOL
 Brian Armstrong
 Giancarlo Devasini
 bitfinex
@@ -32,7 +29,6 @@ sbf
 sam bankman-fried
 paolo ardoino
 stablecoin
-donald trump
 justin sun
 yuchen sun
 yuchen "justin" sun
