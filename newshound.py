@@ -7,6 +7,11 @@ import sqlite3
 import time
 import hashlib
 import re
+import socket
+
+# Cap any single feed fetch: feedparser has no timeout of its own, so one
+# unresponsive server would otherwise stall the whole run.
+socket.setdefaulttimeout(30)
 
 DB_PATH = "last_processed.db"
 

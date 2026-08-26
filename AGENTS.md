@@ -3,8 +3,10 @@ This repository processes RSS feeds to alert on specific keywords via Slack.
 
 ## 🧠 General Workflow Notes
 *   **Core Components:** The main logic resides in `newshound.py`.
-*   **Deployment Target:** Designed for stateless, serverless execution (e.g., Cloud Functions). State persistence is managed using a local SQLite database (`last_processed.db`).
-*   **Workflow Quirk:** RSS feeds are loaded from an external configuration file (`rss.md`), and API credentials/keywords are stored in environment variables (e.g., `SLACK_BOT_TOKEN`, or updated constants).
+*   **Core Components:** The main logic resides in `newshound.py`. Modules include `feedparser` for fetching and `sqlite3` for persistence.
+*   **State Management (CRITICAL):** The service is **stateful**. It uses a local SQLite database (`last_processed.db`) to track processed items, scoped uniquely by the source feed URL in the `processed_items` table. This ensures that processing status is maintained independently for *each* configured RSS feed.
+*   **Execution Flow:** The process runs sequentially: 1) Initializes DB. 2) Fetches all feeds from `rss.md`. 3) Checks each feed's unique items against the database state and global keywords, alerting on new matches before committing updates to the state for that specific feed source.
+*   **Operational Command:** Running `python newshound.py` handles this entire cycle: initializing DB -> checking all configured feeds (statefully) -> sending alerts if matching content is found -> marking *all* unique matched items as processed in the database, per feed source.
 
 ## 🛠️ Operations & Commands
 The core functionality is handled by executing `python newshound.py`.
