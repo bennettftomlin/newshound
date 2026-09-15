@@ -26,3 +26,9 @@ https://www.whitehouse.gov/news/feed/
 https://trumpstruth.org/feed
 https://ssf.gob.sv/seccion/noticias/feed/
 https://www.courtlistener.com/docket/73480398/feed/
+https://www.courtlistener.com/feed/search/?type=r&type=r&q=sam+altman&order_by=entry_date_filed+desc&
+https://www.courtlistener.com/feed/search/?type=r&type=r&q=dario+amodei&order_by=entry_date_filed+desc&
+https://www.courtlistener.com/feed/search/?type=r&type=r&q=elon+musk&order_by=entry_date_filed+desc&
+https://www.courtlistener.com/feed/search/?type=r&type=r&q=openai&order_by=entry_date_filed+desc&
+https://www.courtlistener.com/feed/search/?type=r&type=r&q=spacex&order_by=entry_date_filed+desc&
+https://www.courtlistener.com/feed/search/?type=r&type=r&q=anthropic&order_by=entry_date_filed+desc&

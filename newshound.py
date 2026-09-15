@@ -105,7 +105,7 @@ def check_and_alert(feed_url, conn):
         
         # 3. ALERTING - Process each match
         for item in new_items:
-            message = f"🚨 NEW CRYPTO ALERT! Title: {item['title']}\nLink: {item['link']}"
+            message = f"🚨 NEW ALERT! Title: {item['title']}\nLink: {item['link']}"
             
             # Send alert (Prints if LOCAL_TESTING env var is set)
             if os.environ.get("LOCAL_TESTING") == "True":

@@ -48,3 +48,10 @@ polymarket
 pump.fun
 world liberty financial
 memecoin
+crypto currency
+openai
+anthropic
+spacex
+elon musk
+sam altman
+dario amodei
