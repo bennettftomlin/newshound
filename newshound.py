@@ -80,9 +80,28 @@ def get_entry_text(entry):
         parts.append(block.get('value', '') if isinstance(block, dict) else block)
     return " ".join(str(part) for part in parts)
 
+# sec.gov refuses feedparser's default User-Agent with HTTP 403, and a 403 is not
+# an error here -- it parses as a feed with zero entries, so both SEC feeds went
+# silently dark with nothing in any log. Their automated-access policy wants a UA
+# carrying a contact address; measured 2026-09-17, any UA containing an
+# email-shaped token is accepted and returns 25 entries. Set FEED_USER_AGENT to
+# something like "Bennett Tomlin <you@example.com>". Unset, SEC stays dark but
+# every other feed behaves exactly as before.
+FEED_AGENT = os.environ.get("FEED_USER_AGENT", "").strip()
+
+
+def parse_feed(feed_url):
+    return feedparser.parse(feed_url, agent=FEED_AGENT) if FEED_AGENT \
+        else feedparser.parse(feed_url)
+
+
 def check_and_alert(feed_url, conn):
     processed_ids = get_last_processed_guid_from_db(conn, feed_url)
-    feed = feedparser.parse(feed_url)
+    feed = parse_feed(feed_url)
+    # An empty feed is not an exception. Say so, or a dead source looks identical
+    # to a quiet one -- which is how the SEC feeds hid for as long as they did.
+    if getattr(feed, "status", 200) >= 400 or not feed.entries:
+        print(f"EMPTY feed (http={getattr(feed, 'status', '?')}): {feed_url}")
     keyword_pattern = build_keyword_pattern(get_keywords())
     new_items = []
 
@@ -128,8 +147,22 @@ def get_rss_feeds():
 
 if __name__ == "__main__":
     conn = initialize_db()
+    failures = []
     try:
         for feed_url in get_rss_feeds():
-            check_and_alert(feed_url, conn)
+            # One feed must never cost the rest of the run. socket.setdefaulttimeout
+            # stops a dead server stalling us, but feedparser lets the TimeoutError
+            # propagate, so before this guard the first slow feed aborted the loop and
+            # every feed BELOW it in rss.md went unchecked -- silently, because the
+            # next cycle starts again at the top. 148 such aborts in the error log.
+            try:
+                check_and_alert(feed_url, conn)
+            except Exception as exc:
+                failures.append((feed_url, type(exc).__name__))
     finally:
         conn.close()
+    if failures:
+        # stdout, so a skipped feed shows up beside the "Found N" lines rather than
+        # only as a traceback in the error log nobody reads.
+        print(f"{len(failures)} feed(s) failed this run: " +
+              ", ".join(f"{u} ({e})" for u, e in failures))

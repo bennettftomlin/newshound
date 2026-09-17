@@ -55,3 +55,5 @@ spacex
 elon musk
 sam altman
 dario amodei
+howard lutnick
+cantor fitzgerald
