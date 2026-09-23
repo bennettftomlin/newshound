@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Runtime alert state: rewritten every time an alert fires, so tracking it
+# guarantees a conflict on every pull and carries alert history into the repo.
+last_processed.db

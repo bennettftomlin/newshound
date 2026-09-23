@@ -95,6 +95,11 @@ def parse_feed(feed_url):
         else feedparser.parse(feed_url)
 
 
+def pre_filtered(feed_url):
+    """Feeds whose URL already expresses what we want, so no keyword gate."""
+    return "courtlistener.com" in feed_url
+
+
 def check_and_alert(feed_url, conn):
     processed_ids = get_last_processed_guid_from_db(conn, feed_url)
     feed = parse_feed(feed_url)
@@ -115,7 +120,13 @@ def check_and_alert(feed_url, conn):
             continue
 
         # 2. FILTERING: Check the requirement
-        if keyword_pattern.search(get_entry_text(entry)):
+        # A CourtListener URL is ALREADY the filter: /feed/search/?q=... carries the
+        # query, and /docket/<id>/feed/ is one docket picked on purpose. Re-running
+        # the keyword pattern over it can only subtract, and it does -- a docket is
+        # captioned by party ("United States v. Saylor"), so the q=michael+saylor
+        # search returned 20 results of which the keyword "michael saylor" matched
+        # ZERO. Trust the search.
+        if pre_filtered(feed_url) or keyword_pattern.search(get_entry_text(entry)):
             new_items.append(entry)
 
 
@@ -155,10 +166,25 @@ if __name__ == "__main__":
             # propagate, so before this guard the first slow feed aborted the loop and
             # every feed BELOW it in rss.md went unchecked -- silently, because the
             # next cycle starts again at the top. 148 such aborts in the error log.
+            t0 = time.time()
             try:
                 check_and_alert(feed_url, conn)
             except Exception as exc:
-                failures.append((feed_url, type(exc).__name__))
+                # Measured 2026-09-17: the two feeds that time out in production
+                # (q=htx, q=yuchen+sun) answer in 0.3-0.4s when asked directly, so
+                # a 30s read timeout is not a ceiling set too low -- it is an
+                # intermittent stall on a fast server. Raising the ceiling would
+                # only make a bad cycle slower. One retry is the mitigation that
+                # matches the fault; if it fails twice, record it and move on.
+                time.sleep(2)
+                try:
+                    check_and_alert(feed_url, conn)
+                    print(f"RETRY OK after {type(exc).__name__}: {feed_url}")
+                except Exception as exc2:
+                    failures.append((feed_url, f"{type(exc2).__name__} x2"))
+            slow = time.time() - t0
+            if slow > 10:
+                print(f"SLOW {slow:.0f}s: {feed_url}")
     finally:
         conn.close()
     if failures:
