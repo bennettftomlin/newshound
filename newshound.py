@@ -263,19 +263,72 @@ def courtlistener_token():
     return token
 
 _docket_links = {}
+_log_dockets = None
+BARE_HOW = {}                   # how each bare link was resolved this run: sibling / log / api / caption-search
+_DOCKET_ID = re.compile(r"https://www\.courtlistener\.com/docket/(\d+)/")
+_ENTRY_TITLE = re.compile(r"^(?:Entry #\d+|Minute entry from \S+) in (.+), [\w:.-]+$")
 
-def resolve_bare_link(entry, feed_url):
+
+def caption_of(title):
+    """The case caption in a feed entry's title: a search feed's title IS the caption; a docket feed's reads
+    "Entry #15 in <caption>, <docket number>" or "Minute entry from <date> in <caption>, <docket number>"."""
+    t = re.sub(r"\s+", " ", title or "").strip()
+    m = _ENTRY_TITLE.match(t)
+    return m.group(1) if m else t
+
+
+def _unique_docket(links):
+    """docket_link of the links when they all name ONE docket, else None: captions recur ("USA v. Sealed", "In re
+    Grand Jury Subpoena"), and two dockets under one caption means the caption cannot pick."""
+    ids = {m.group(1) for m in (_DOCKET_ID.search(l or "") for l in links) if m}
+    if len(ids) != 1:
+        return None
+    return next(docket_link(l) for l in links if _DOCKET_ID.search(l or ""))
+
+
+def _logged_docket_links():
+    """{caption: [document links]} from the entry log's last ENTRY_LOG_DAYS (read once per run)."""
+    global _log_dockets
+    if _log_dockets is None:
+        _log_dockets = {}
+        try:
+            with open(ENTRY_LOG, encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        r = json.loads(line)
+                    except ValueError:
+                        continue
+                    link = r.get("link") or ""
+                    if _DOCKET_ID.search(link):
+                        _log_dockets.setdefault(caption_of(r.get("title")), []).append(link)
+        except OSError:
+            pass
+    return _log_dockets
+
+
+def resolve_bare_link(entry, feed_url, siblings=None):
     """A real link for a CourtListener entry whose feed link is just the site root.
 
     Docket entries with no document of their own -- "Case Assigned", "Summons
     Issued", the first entries of every new case -- come through the RSS with
-    https://www.courtlistener.com as their link. The search API returns each
-    result's docket URL, so ask it once per feed (only when such an entry is about
-    to be sent) and match on the caption. If the API is unavailable -- no token, a
-    rate limit -- link to a search for the exact caption, which is one click from
-    the docket, rather than to the homepage.
+    https://www.courtlistener.com as their link, and the entry carries no docket id.
+    Free answers first (2026-10-08, Bennett: use the API only when nothing else
+    has it): a sibling entry in the same feed with the same caption that does
+    link a document; else the same caption in newshound's own entry log (any feed,
+    14 days); each only when every such link names ONE docket. Then the search
+    API, once per feed and run, matched on the caption. Else a search for the
+    exact caption, one click from the docket, rather than the homepage.
     """
     title = entry.get('title', '')
+    cap = caption_of(title)
+    found = _unique_docket([e.get("link") for e in (siblings or ()) if caption_of(e.get("title")) == cap])
+    if found:
+        BARE_HOW["sibling"] = BARE_HOW.get("sibling", 0) + 1
+        return found
+    found = _unique_docket(_logged_docket_links().get(cap, []))
+    if found:
+        BARE_HOW["log"] = BARE_HOW.get("log", 0) + 1
+        return found
     query = urllib.parse.parse_qs(urllib.parse.urlparse(feed_url).query).get('q', [''])[0]
     token = courtlistener_token()
     if token and query:
@@ -295,7 +348,9 @@ def resolve_bare_link(entry, feed_url):
             except Exception as exc:
                 print(f"CourtListener API unavailable for docket links ({type(exc).__name__}); using caption searches")
         if title in _docket_links[query]:
+            BARE_HOW["api"] = BARE_HOW.get("api", 0) + 1
             return _docket_links[query][title]
+    BARE_HOW["caption-search"] = BARE_HOW.get("caption-search", 0) + 1
     return "https://www.courtlistener.com/?" + urllib.parse.urlencode({"q": f'caseName:("{title}")', "type": "r"})
 
 def new_case_feed(feed_url):
@@ -501,7 +556,7 @@ def handle_feed(feed_url, conn, sent_keys, feed, first_sight, keywords, processe
                 continue
             link = item.get('link', '')
             if link in BARE_COURTLISTENER:
-                link = resolve_bare_link(item, feed_url)
+                link = resolve_bare_link(item, feed_url, siblings=feed.entries)
             if per_case:
                 link = docket_link(link) or link
                 message = f"🚨 NEW CASE! Title: {item['title']}\nLink: {link}"

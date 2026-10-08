@@ -911,3 +911,54 @@ class ConnectTimeout(unittest.TestCase):
             newshound._connect_fast(("x.example", 443), timeout=2)
         self.assertEqual(seen, [2, 2])
 
+
+class BareLinksWithoutApi(Base):
+    """A bare entry's docket comes from its siblings or the entry log before any API call (2026-10-08)."""
+
+    def setUp(self):
+        super().setUp()
+        newshound._docket_links.clear()
+        newshound._log_dockets = None
+        newshound.BARE_HOW.clear()
+        self.feed = "https://www.courtlistener.com/feed/search/?q=%28openai%29"
+        self.bare = {"title": "TradeSun, Inc. v. OpenAI OpCo, LLC", "link": "https://www.courtlistener.com"}
+
+    def _no_api(self):
+        return patch("urllib.request.urlopen", side_effect=AssertionError("the API must not be called"))
+
+    def test_a_sibling_with_the_same_caption_gives_the_docket(self):
+        sib = [self.bare, {"title": "TradeSun, Inc. v. OpenAI OpCo, LLC",
+                           "link": "https://www.courtlistener.com/docket/74916072/8/tradesun-inc-v-openai-opco-llc/"}]
+        with self._no_api(), patch.object(newshound, "courtlistener_token", return_value="tok"):
+            link = newshound.resolve_bare_link(self.bare, self.feed, siblings=sib)
+        self.assertEqual(link, "https://www.courtlistener.com/docket/74916072/tradesun-inc-v-openai-opco-llc/")
+        self.assertEqual(newshound.BARE_HOW, {"sibling": 1})
+
+    def test_the_entry_log_gives_the_docket_when_no_sibling_does(self):
+        with open(newshound.ENTRY_LOG, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"feed": "https://www.courtlistener.com/docket/74916072/feed/",
+                                 "title": "Entry #8 in TradeSun, Inc. v. OpenAI OpCo, LLC, 3:26-cv-08123",
+                                 "link": "https://www.courtlistener.com/docket/74916072/8/tradesun-inc-v-openai-opco-llc/",
+                                 "logged_ts": 1}) + "\n")
+        with self._no_api(), patch.object(newshound, "courtlistener_token", return_value="tok"):
+            link = newshound.resolve_bare_link(self.bare, self.feed, siblings=[self.bare])
+        self.assertEqual(link, "https://www.courtlistener.com/docket/74916072/tradesun-inc-v-openai-opco-llc/")
+        self.assertEqual(newshound.BARE_HOW, {"log": 1})
+
+    def test_a_caption_naming_two_dockets_is_not_trusted(self):
+        sib = [{"title": "USA v. Sealed", "link": "https://www.courtlistener.com/docket/1/2/usa-v-sealed/"},
+               {"title": "USA v. Sealed", "link": "https://www.courtlistener.com/docket/9/1/usa-v-sealed/"}]
+        bare = {"title": "USA v. Sealed", "link": "https://www.courtlistener.com"}
+        with patch.object(newshound, "courtlistener_token", return_value=""):
+            link = newshound.resolve_bare_link(bare, self.feed, siblings=sib)
+        self.assertTrue(link.startswith("https://www.courtlistener.com/?"), link)
+        self.assertEqual(newshound.BARE_HOW, {"caption-search": 1})
+
+    def test_docket_feed_titles_reduce_to_their_caption(self):
+        self.assertEqual(newshound.caption_of("Minute entry from 2026-10-07 in Sun v. Geffen, 1:25-cv-00995"),
+                         "Sun v. Geffen")
+        self.assertEqual(newshound.caption_of("Entry #514 in United States v. Approximately 127,271 bitcoin (BTC) "
+                                              "previously stored at the virtual currency..., 1:25-cv-05745"),
+                         "United States v. Approximately 127,271 bitcoin (BTC) previously stored at the virtual currency...")
+        self.assertEqual(newshound.caption_of("TradeSun, Inc. v. OpenAI OpCo, LLC"), "TradeSun, Inc. v. OpenAI OpCo, LLC")
+
