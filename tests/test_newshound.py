@@ -6,6 +6,7 @@ The two tests this file replaced called check_and_alert with a signature it no
 longer had and had been failing since before the dedupe change.
 """
 import json
+import socket
 import os
 import tempfile
 import types
@@ -355,6 +356,170 @@ class Migration(unittest.TestCase):
             conn.close()
 
 
+def dated(entry, ts):
+    """entry as feedparser serves it, published at epoch ts (UTC)."""
+    import time as _t
+    return dict(entry, published_parsed=_t.gmtime(ts))
+
+
+class CourtListenerSchedule(Base):
+    """CourtListener feeds are read on a per-feed schedule; every other feed on every run (2026-10-08)."""
+    DAY = 86400
+
+    def run_all(self, urls, parsed_for):
+        """One newshound run over urls; parsed_for(url) is what the feed answers. Returns the urls fetched."""
+        fetched = []
+
+        def parse(url):
+            fetched.append(url)
+            result = parsed_for(url)
+            if isinstance(result, Exception):
+                raise result
+            return result
+        with patch("newshound.parse_feed", side_effect=parse):
+            self.failures = newshound.run(self.conn, urls)
+        return fetched
+
+    def row(self, url):
+        return self.conn.execute("SELECT next_due, interval, newest_ts FROM feed_schedule WHERE feed_source = ?",
+                                 (url,)).fetchone()
+
+    def due_at(self, url, when, newest=None):
+        self.conn.execute("INSERT OR REPLACE INTO feed_schedule VALUES (?, ?, ?, ?)",
+                          (url, when, newshound.CL_STALE_INTERVAL, newest))
+        self.conn.commit()
+
+    def read_once(self, url, parsed):
+        """Read url (seen, due now) once and return (seconds from the read to its next_due, stored interval)."""
+        import time as _t
+        self.seen(url)
+        self.due_at(url, 0)
+        t0 = _t.time()
+        self.assertEqual(self.run_all([url], lambda u: parsed), [url])
+        next_due, interval, _ = self.row(url)
+        return next_due - t0, interval
+
+    def assertNear(self, got, want):
+        self.assertTrue(want - 1 <= got <= want + 5, f"{got} is not ~{want}")
+
+    def test_the_intervals(self):
+        import time as _t
+        now = _t.time()
+        cases = [(DOCKET, feed(dated(docket_entry(1), now - 1 * self.DAY)), newshound.CL_ACTIVE_INTERVAL),
+                 (DOCKET, feed(dated(docket_entry(1), now - 5 * self.DAY)), newshound.CL_RECENT_INTERVAL),
+                 (DOCKET, feed(dated(docket_entry(1), now - 40 * self.DAY)), newshound.CL_STALE_INTERVAL),
+                 (DOCKET, feed(), newshound.CL_STALE_INTERVAL),
+                 (SEARCH, feed(dated(doc(1), now - 40 * self.DAY)), newshound.CL_SEARCH_INTERVAL)]
+        for url, parsed, want in cases:
+            with self.subTest(url=url, want=want):
+                self.conn.execute("DELETE FROM feed_schedule"); self.conn.commit()
+                wait, interval = self.read_once(url, parsed)
+                self.assertEqual(interval, want)
+                self.assertNear(wait, want - newshound.CL_RUN_SLACK)
+        self.assertEqual((newshound.CL_ACTIVE_INTERVAL, newshound.CL_RECENT_INTERVAL, newshound.CL_STALE_INTERVAL,
+                          newshound.CL_SEARCH_INTERVAL), (1800, 7200, 21600, 1800))
+
+    def test_a_docket_with_no_dated_entry_is_judged_by_its_last_modified(self):
+        import email.utils, time as _t
+        parsed = feed(docket_entry(1))
+        parsed.headers = {"last-modified": email.utils.formatdate(_t.time() - 3600, usegmt=True)}
+        self.assertEqual(self.read_once(DOCKET, parsed)[1], newshound.CL_ACTIVE_INTERVAL)
+
+    def test_a_30_minute_feed_is_read_on_the_run_30_minutes_later_not_40(self):
+        # launchd runs every 600 s; a feed is reached a little earlier or later in each run than in the last.
+        import time as _t
+        t0 = _t.time()
+        self.read_once(SEARCH, feed())
+        runs = [t0 + 600 * k + jitter for k, jitter in ((1, 20), (2, 20), (3, -20))]
+        due = [newshound.cl_due(self.conn, SEARCH, t) for t in runs]
+        self.assertEqual(due, [False, False, True])
+
+    def test_a_feed_not_yet_due_is_not_fetched_but_other_feeds_are_every_run(self):
+        import time as _t
+        self.seen(DOCKET); self.seen(SEC)
+        self.due_at(DOCKET, _t.time() + 3600)
+        for _ in range(2):
+            self.assertEqual(self.run_all([DOCKET, SEC], lambda u: feed()), [SEC])
+        self.assertIsNone(self.row(SEC), "a non-CourtListener feed has no schedule")
+
+    def test_a_due_feed_is_fetched_and_the_run_says_how_many_were(self):
+        import contextlib, io, time as _t
+        self.seen(DOCKET); self.seen(SEARCH)
+        self.due_at(DOCKET, _t.time() - 1)
+        self.due_at(SEARCH, _t.time() + 3600)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            fetched = self.run_all([DOCKET, SEARCH, SEC], lambda u: feed())
+        self.assertEqual(fetched, [DOCKET, SEC])
+        self.assertIn("CourtListener: read 1 of 2 feeds due (1 not due)", out.getvalue())
+
+    def test_a_feed_never_fetched_is_read_at_once(self):
+        self.assertEqual(self.run_all([DOCKET], lambda u: feed(docket_entry(1))), [DOCKET])
+        self.assertEqual(self.posted(), [], "its first sight is still the quiet baseline")
+        self.assertIsNotNone(self.row(DOCKET))
+
+    def test_a_known_feed_with_no_schedule_is_staggered_within_its_window(self):
+        import time as _t
+        self.seen(DOCKET)
+        offset = newshound.cl_stagger(DOCKET, newshound.cl_first_window(DOCKET))
+        self.assertGreater(offset, 10, "fixture: DOCKET must not land at the very start of its window")
+        t0 = _t.time()
+        self.assertEqual(self.run_all([DOCKET], lambda u: feed()), [], "read before its staggered turn")
+        next_due, interval, newest = self.row(DOCKET)
+        self.assertNear(next_due - t0, offset)
+        self.assertEqual(interval, newshound.CL_ACTIVE_INTERVAL)
+        self.assertIsNone(newest)
+
+    def test_stagger_offsets_differ_and_lie_in_the_window(self):
+        urls = [l.strip() for l in open(os.path.join(os.path.dirname(newshound.__file__), "rss.md"),
+                                        encoding="utf-8-sig") if newshound.is_courtlistener(l.strip())]
+        self.assertGreater(len(urls), 1)
+        offsets = [newshound.cl_stagger(u, newshound.cl_first_window(u)) for u in urls]
+        for u, o in zip(urls, offsets):
+            self.assertTrue(0 <= o < newshound.cl_first_window(u), (u, o))
+        self.assertGreater(len(set(offsets)), len(urls) // 2, "the feeds would come due together")
+        self.assertEqual(offsets, [newshound.cl_stagger(u, newshound.cl_first_window(u)) for u in urls], "not stable")
+
+    def test_a_failed_read_is_tried_again_in_30_minutes_keeping_what_was_known(self):
+        import time as _t
+        for answer in (TimeoutError("stalled"), types.SimpleNamespace(entries=[], status=503)):
+            with self.subTest(answer=answer):
+                self.seen(DOCKET)
+                self.due_at(DOCKET, 0, newest=_t.time() - 40 * self.DAY)
+                t0 = _t.time()
+                fetched = self.run_all([DOCKET], lambda u: answer)
+                self.assertNear(self.row(DOCKET)[0] - t0, newshound.CL_RETRY_INTERVAL - newshound.CL_RUN_SLACK)
+                self.assertIsNotNone(self.row(DOCKET)[2], "a failure erased the newest entry known")
+                if isinstance(answer, Exception):
+                    self.assertEqual(len(fetched), 2, "the main loop's two attempts")
+                    self.assertEqual(len(self.failures), 1)
+
+    def test_a_courtlistener_read_waits_a_second_except_in_local_testing(self):
+        self.seen(DOCKET); self.seen(SEC)
+        self.due_at(DOCKET, 0)
+        with patch("newshound.time.sleep") as slept:
+            self.run_all([DOCKET, SEC], lambda u: feed())
+        self.assertEqual([c.args for c in slept.call_args_list], [(newshound.CL_FEED_GAP,)])
+        self.due_at(DOCKET, 0)
+        with patch("newshound.time.sleep") as slept, patch.dict(os.environ, {"LOCAL_TESTING": "True"}):
+            self.run_all([DOCKET, SEC], lambda u: feed())
+        self.assertEqual(slept.call_count, 0)
+
+    def test_only_the_courtlistener_host_is_scheduled(self):
+        self.assertTrue(newshound.is_courtlistener(DOCKET))
+        self.assertTrue(newshound.is_courtlistener(NEWCASE))
+        self.assertFalse(newshound.is_courtlistener(SEC))
+        self.assertFalse(newshound.is_courtlistener("https://example.com/?u=https://www.courtlistener.com/feed/"))
+
+    def test_courtlistener_entries_reach_the_entry_log(self):
+        self.seen(DOCKET)
+        self.due_at(DOCKET, 0)
+        self.run_all([DOCKET], lambda u: feed(docket_entry(62)))
+        with open(newshound.ENTRY_LOG) as fh:
+            rows = [json.loads(x) for x in fh]
+        self.assertEqual([(r["feed"], r["link"]) for r in rows], [(DOCKET, docket_entry(62)["link"])])
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -391,10 +556,21 @@ class EntryLog(unittest.TestCase):
         self.assertEqual(rows[0]["guid"], e["id"])
         self.assertEqual(rows[0]["published_ts"], 1791388800, "feedparser's struct is UTC, read as UTC")
 
-    def test_courtlistener_feeds_are_not_logged(self):
+    def test_courtlistener_feeds_are_logged(self):
+        # Since 2026-10-08 the morning gather reuses newshound's CourtListener reads instead of reading the feeds again.
         self.assertEqual(newshound.log_entries("https://www.courtlistener.com/feed/search/?q=x",
-                                               [{"id": "a", "title": "t"}]), 0)
-        self.assertFalse(os.path.exists(self.path))
+                                               [{"id": "a", "title": "t"}]), 1)
+        self.assertEqual([(r["feed"], r["guid"]) for r in self.lines()],
+                         [("https://www.courtlistener.com/feed/search/?q=x", "a")])
+
+    def test_courtlistener_entries_without_a_document_are_each_logged(self):
+        # Every one of them is served with the site root as its guid; keyed on that, only the first was ever logged.
+        root = "https://www.courtlistener.com"
+        entries = [{"id": root, "link": root, "title": t, "published": "2026-10-07", "summary": ""}
+                   for t in ("Doe v. Coinbase, Inc.", "Roe v. Payward, Inc.")]
+        self.assertEqual(newshound.log_entries(DOCKET, entries), 2)
+        self.assertEqual(newshound.log_entries(DOCKET, [dict(e) for e in entries]), 0)
+        self.assertEqual([r["guid"] for r in self.lines()], [root, root], "the guid is logged as served")
 
     def test_old_lines_are_pruned_and_a_cut_line_dropped(self):
         import time as _t
@@ -405,3 +581,333 @@ class EntryLog(unittest.TestCase):
         logged = newshound._load_entry_log()
         self.assertEqual(logged, {("f", "new")})
         self.assertEqual([r["guid"] for r in self.lines()], ["new"])
+
+
+FED = "https://www.federalreserve.gov/feeds/press_all.xml"
+OCC = "https://www.occ.treas.gov/rss/occ_news.xml"
+LAST_MODIFIED = "Wed, 07 Oct 2026 16:00:00 GMT"
+
+
+def full(*entries, etag='"v1"', modified=LAST_MODIFIED, status=200):
+    """A read that carried a body, with the validators feedparser exposes when the server sent them."""
+    parsed = types.SimpleNamespace(entries=[dict(e) for e in entries], status=status)
+    if etag:
+        parsed.etag = etag
+    if modified:
+        parsed.modified = modified
+    return parsed
+
+
+def not_modified():
+    return types.SimpleNamespace(entries=[], status=304)
+
+
+def fed_item(n, title="Federal Reserve Board announces action against a bitcoin bank"):
+    return {"id": f"https://www.federalreserve.gov/p/{n}", "link": f"https://www.federalreserve.gov/p/{n}",
+            "title": title, "summary": ""}
+
+
+class EveryFeedRun(Base):
+    """One newshound run over urls, recording each read and the validators it was sent."""
+
+    def run_all(self, urls, parsed_for):
+        import contextlib, io
+        self.calls = []
+
+        def parse(url, **kwargs):
+            self.calls.append((url, kwargs))
+            result = parsed_for(url)
+            if isinstance(result, Exception):
+                raise result
+            return result
+        out = io.StringIO()
+        with patch("newshound.parse_feed", side_effect=parse), contextlib.redirect_stdout(out):
+            self.failures = newshound.run(self.conn, urls)
+        self.out = out.getvalue()
+        return [u for u, _ in self.calls]
+
+    def state(self):
+        return [sorted(self.conn.execute(f"SELECT * FROM {t}").fetchall())
+                for t in ("processed_items", "sent_keys", "feeds_seen", "cases_seen", "feed_schedule")]
+
+    def entry_log(self):
+        with open(newshound.ENTRY_LOG) as fh:
+            return fh.read()
+
+    def validators(self, url):
+        return self.conn.execute("SELECT etag, modified FROM feed_validators WHERE feed_source = ?", (url,)).fetchone()
+
+
+class ConditionalReads(EveryFeedRun):
+    def test_a_304_is_quiet_changes_nothing_and_the_validators_go_out_again(self):
+        self.seen(FED)
+        self.run_all([FED], lambda u: full(fed_item(1)))
+        self.assertEqual(self.calls, [(FED, {})], "the first read is unconditional")
+        self.assertEqual(len(self.posted()), 1)
+        before, log_before = self.state(), self.entry_log()
+        for _ in range(2):
+            self.run_all([FED], lambda u: not_modified())
+            self.assertEqual(self.calls, [(FED, {"etag": '"v1"', "modified": LAST_MODIFIED})])
+            self.assertNotIn("EMPTY", self.out)
+            self.assertEqual(self.out, "")
+            self.assertEqual(self.failures, [])
+        self.assertEqual(self.state(), before, "a 304 touched processed or sent state")
+        self.assertEqual(self.entry_log(), log_before)
+        self.assertEqual(self.validators(FED), ('"v1"', LAST_MODIFIED))
+        self.assertEqual(len(self.posted()), 1)
+
+    def test_a_changed_feed_after_a_304_still_alerts_its_new_item(self):
+        self.seen(FED)
+        self.run_all([FED], lambda u: full(fed_item(1)))
+        self.run_all([FED], lambda u: not_modified())
+        self.run_all([FED], lambda u: full(fed_item(1), fed_item(2), etag='"v2"'))
+        self.assertEqual(len(self.posted()), 2)
+        self.assertIn("/p/2", self.posted()[1])
+        self.assertEqual(self.validators(FED), ('"v2"', LAST_MODIFIED))
+
+    def test_validators_are_stored_only_from_a_200(self):
+        self.seen(FED)
+        for answer in (full(fed_item(1), status=301), full(status=503), full(status=404),
+                       types.SimpleNamespace(entries=[], bozo_exception=OSError("timed out"))):
+            with self.subTest(status=getattr(answer, "status", None)):
+                self.run_all([FED], lambda u: answer)
+                self.assertIsNone(self.validators(FED))
+                self.conn.execute("DELETE FROM feed_health"); self.conn.commit()
+        self.run_all([FED], lambda u: full(fed_item(1)))
+        self.assertEqual(self.validators(FED), ('"v1"', LAST_MODIFIED))
+        # A feed that starts redirecting: a stored ETag sent through the redirect would come back as a 304 dressed in
+        # the redirect's status, so the validators are dropped and the next read is a full one.
+        self.run_all([FED], lambda u: full(fed_item(1), status=301))
+        self.assertIsNone(self.validators(FED))
+        self.run_all([FED], lambda u: full(fed_item(1), status=301))
+        self.assertEqual(self.calls, [(FED, {})])
+
+    def test_a_200_without_validators_sends_none(self):
+        self.seen(OCC)
+        self.run_all([OCC], lambda u: full(etag=None, modified=None))
+        self.run_all([OCC], lambda u: full(etag=None, modified=None))
+        self.assertEqual(self.calls, [(OCC, {})])
+        self.run_all([OCC], lambda u: full(etag=None))
+        self.run_all([OCC], lambda u: full(etag=None))
+        self.assertEqual(self.calls, [(OCC, {"modified": LAST_MODIFIED})])
+
+    def test_apaches_compressed_etag_goes_back_without_its_suffix(self):
+        ssf = "https://ssf.gob.sv/seccion/noticias/feed/"
+        self.seen(ssf)
+        self.run_all([ssf], lambda u: full(etag='"9e5e2567-gzip"'))
+        self.run_all([ssf], lambda u: not_modified())
+        self.assertEqual(self.calls, [(ssf, {"etag": '"9e5e2567"', "modified": LAST_MODIFIED})])
+        self.assertEqual(self.validators(ssf)[0], '"9e5e2567-gzip"', "stored as served")
+
+    def test_courtlistener_is_never_sent_validators(self):
+        self.seen(DOCKET)
+        for _ in range(2):
+            self.conn.execute("INSERT OR REPLACE INTO feed_schedule VALUES (?, 0, 1800, NULL)", (DOCKET,))
+            self.conn.commit()
+            self.run_all([DOCKET], lambda u: full(docket_entry(1)))
+            self.assertEqual(self.calls, [(DOCKET, {})])
+        self.assertIsNone(self.validators(DOCKET))
+
+    def test_a_new_keyword_list_reads_the_feed_in_full(self):
+        # A 304 skips re-scanning the items already in the feed, which a keyword added since can match.
+        self.seen(FED)
+        self.run_all([FED], lambda u: full(fed_item(1, title="Stablecoin guidance")))
+        self.assertEqual(self.posted(), [])
+        with patch("newshound.get_keywords", return_value=["crypto", "bitcoin", "stablecoin"]):
+            self.run_all([FED], lambda u: full(fed_item(1, title="Stablecoin guidance")))
+        self.assertEqual(self.calls, [(FED, {})])
+        self.assertEqual(len(self.posted()), 1)
+
+    def test_validators_are_saved_only_once_every_item_is_sent(self):
+        self.seen(FED)
+        # item 1 is posted; item 2's post fails on both of the run's attempts
+        self.slack.chat_postMessage.side_effect = [None, RuntimeError("slack down"), RuntimeError("slack down")]
+        self.run_all([FED], lambda u: full(fed_item(1), fed_item(2)))
+        self.assertIsNone(self.validators(FED), "a 304 next run would never send item 2")
+        self.slack.chat_postMessage.side_effect = None
+        self.run_all([FED], lambda u: full(fed_item(1), fed_item(2)))
+        self.assertEqual(self.calls, [(FED, {})])
+        self.assertIn("/p/2", self.posted()[-1])
+        self.assertEqual(sum("/p/1" in t for t in self.posted()), 1)
+        self.assertEqual(self.validators(FED), ('"v1"', LAST_MODIFIED))
+
+    def test_parse_feed_hands_the_validators_and_the_agent_to_feedparser(self):
+        with patch("newshound.feedparser.parse") as parse, patch("newshound.FEED_AGENT", "newshound <a@b.c>"):
+            newshound.parse_feed(FED, etag='"v1"', modified=LAST_MODIFIED)
+            newshound.parse_feed(FED)
+        self.assertEqual(parse.call_args_list[0].kwargs,
+                         {"agent": "newshound <a@b.c>", "etag": '"v1"', "modified": LAST_MODIFIED})
+        self.assertEqual(parse.call_args_list[1].kwargs, {"agent": "newshound <a@b.c>"})
+
+
+class Backoff(EveryFeedRun):
+    def health(self, url):
+        return self.conn.execute("SELECT failures, skip_until FROM feed_health WHERE feed_source = ?",
+                                 (url,)).fetchone()
+
+    def expire(self):
+        self.conn.execute("UPDATE feed_health SET skip_until = 0"); self.conn.commit()
+
+    def test_the_tiers_and_one_line_per_step(self):
+        import time as _t
+        self.seen(FED)
+        lines = []
+        for n in range(1, 13):
+            t0 = _t.time()
+            self.assertEqual(self.run_all([FED], lambda u: full(status=404)), [FED], f"failure {n} was not read")
+            lines += [l for l in self.out.splitlines() if l.startswith(("BACKOFF", "RECOVERED"))]
+            failures, skip_until = self.health(FED)
+            self.assertEqual(failures, n)
+            want = 0 if n < 3 else 1800 if n < 6 else 7200 if n < 10 else 21600
+            if want:
+                got = skip_until - t0
+                self.assertTrue(want - newshound.CL_RUN_SLACK - 1 <= got <= want - newshound.CL_RUN_SLACK + 5,
+                                (n, got))
+            else:
+                self.assertIsNone(skip_until, n)
+            self.expire()
+        self.assertEqual(lines, [f"BACKOFF 30m after 3 failures (http=404): {FED}",
+                                 f"BACKOFF 2h after 6 failures (http=404): {FED}",
+                                 f"BACKOFF 6h after 10 failures (http=404): {FED}"])
+        self.run_all([FED], lambda u: not_modified())
+        self.assertIn(f"RECOVERED after 12 failures: {FED}", self.out.splitlines())
+        self.assertIsNone(self.health(FED))
+        self.run_all([FED], lambda u: full())
+        self.assertNotIn("RECOVERED", self.out)
+
+    def test_a_feed_in_backoff_is_not_fetched(self):
+        self.seen(FED); self.seen(OCC)
+        for _ in range(3):
+            self.run_all([FED, OCC], lambda u: full(status=403) if u == FED else full())
+        for _ in range(2):
+            self.assertEqual(self.run_all([FED, OCC], lambda u: full()), [OCC])
+            self.assertNotIn("BACKOFF", self.out)
+        self.expire()
+        self.assertEqual(self.run_all([FED, OCC], lambda u: full()), [FED, OCC])
+        self.assertIn(f"RECOVERED after 3 failures: {FED}", self.out)
+
+    def test_a_success_resets_the_streak(self):
+        self.seen(FED)
+        for answer in (full(status=500), full(status=500), not_modified(), full(status=500), full(status=500)):
+            self.run_all([FED], lambda u: answer)
+        self.assertEqual(self.health(FED), (2, None))
+        self.assertNotIn("RECOVERED", self.out, "a feed never in backoff does not recover")
+
+    def test_what_counts_as_a_failure(self):
+        cases = [(TimeoutError("stalled"), "TimeoutError x2"),
+                 (types.SimpleNamespace(entries=[], bozo_exception=OSError("refused")), "OSError"),
+                 (full(status=403), "http=403")]
+        for answer, why in cases:
+            with self.subTest(why=why):
+                self.conn.execute("DELETE FROM feed_health"); self.conn.commit()
+                self.seen(FED)
+                for _ in range(3):
+                    self.run_all([FED], lambda u: answer)
+                self.assertIn(f"BACKOFF 30m after 3 failures ({why}): {FED}", self.out)
+        self.conn.execute("DELETE FROM feed_health"); self.conn.commit()
+        for answer in (full(status=301), full(etag=None, modified=None), not_modified()):
+            self.run_all([FED], lambda u: answer)
+            self.assertIsNone(self.health(FED), answer)
+
+    def test_a_failed_slack_post_is_not_held_against_the_feed(self):
+        self.seen(FED)
+        self.slack.chat_postMessage.side_effect = RuntimeError("slack down")
+        for n in range(1, 4):
+            self.run_all([FED], lambda u: full(fed_item(n)))
+            self.assertEqual(len(self.failures), 1)
+        self.assertIsNone(self.health(FED))
+
+    def test_courtlistener_keeps_its_own_retry_and_gets_no_backoff(self):
+        self.seen(DOCKET)
+        for _ in range(4):
+            self.conn.execute("INSERT OR REPLACE INTO feed_schedule VALUES (?, 0, 1800, NULL)", (DOCKET,))
+            self.conn.commit()
+            self.assertEqual(self.run_all([DOCKET], lambda u: full(status=503)), [DOCKET])
+        self.assertIsNone(self.health(DOCKET))
+        self.assertNotIn("BACKOFF", self.out)
+
+
+class FeedList(unittest.TestCase):
+    def test_no_feed_is_read_over_plain_http(self):
+        # sec.gov answers http with a 403 or a redirect, justice.gov and cftc.gov with a 301: each read went through a
+        # redirect (whose status hides a 304) or failed.
+        path = os.path.join(os.path.dirname(newshound.__file__), "rss.md")
+        with open(path, encoding="utf-8-sig") as fh:
+            urls = [l.strip() for l in fh if l.strip()]
+        self.assertEqual([u for u in urls if not u.startswith("https://")], [])
+        # Each answered with a redirect (measured 2026-10-08), and a redirect's read stores no validators: the feed
+        # would be downloaded in full every run. Listed is where each redirect ends.
+        retired = {"https://www.justice.gov/atr/rss/atr_press.xml": "https://www.justice.gov/news/rss",
+                   "https://www.sec.gov/rss/litigation/admin.xml":
+                       "https://www.sec.gov/enforcement-litigation/administrative-proceedings/rss",
+                   "https://www.sec.gov/rss/news/press.xml": "https://www.sec.gov/news/pressreleases.rss",
+                   "https://trumpstruth.org/feed": "https://www.trumpstruth.org/feed"}
+        self.assertEqual([u for u in urls if u.replace("http://", "https://", 1) in retired], [])
+        self.assertTrue(set(retired.values()) <= set(urls))
+
+
+class ConnectTimeout(unittest.TestCase):
+    """A dead address costs CONNECT_TIMEOUT, not the 30 s read timeout; the live one then gets the full timeout."""
+
+    def test_dead_address_skipped_fast_then_full_read_timeout(self):
+        tried, timeouts = [], []
+
+        class FakeSock:
+            def __init__(self, *a):
+                self.t = None
+            def settimeout(self, t):
+                self.t = t
+                timeouts.append(t)
+            def connect(self, sa):
+                tried.append((sa[0], self.t))
+                if sa[0] == "10.0.0.1":
+                    raise socket.timeout("timed out")
+            def bind(self, a):
+                pass
+            def close(self):
+                pass
+        addrs = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 443)),
+                 (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.2", 443))]
+        with patch.object(newshound.socket, "getaddrinfo", return_value=addrs), \
+             patch.object(newshound.socket, "socket", FakeSock):
+            s = newshound._connect_fast(("ssf.example", 443))
+        self.assertEqual(tried, [("10.0.0.1", newshound.CONNECT_TIMEOUT), ("10.0.0.2", newshound.CONNECT_TIMEOUT)])
+        self.assertEqual(s.t, socket.getdefaulttimeout(), "after connecting, the normal read timeout (30 s)")
+
+    def test_every_address_dead_raises_the_last_error(self):
+        class Dead:
+            def __init__(self, *a):
+                pass
+            def settimeout(self, t):
+                pass
+            def connect(self, sa):
+                raise ConnectionRefusedError("refused")
+            def close(self):
+                pass
+        addrs = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.1", 443))]
+        with patch.object(newshound.socket, "getaddrinfo", return_value=addrs), \
+             patch.object(newshound.socket, "socket", Dead):
+            with self.assertRaises(ConnectionRefusedError):
+                newshound._connect_fast(("x.example", 443))
+
+    def test_installed_and_used_by_http_client(self):
+        import http.client
+        self.assertIs(socket.create_connection, newshound._connect_fast)
+        self.assertIs(http.client.HTTPConnection("example.com")._create_connection, newshound._connect_fast)
+
+    def test_an_explicit_shorter_timeout_bounds_the_connect_too(self):
+        seen = []
+
+        class Sock:
+            def __init__(self, *a):
+                pass
+            def settimeout(self, t):
+                seen.append(t)
+            def connect(self, sa):
+                pass
+        addrs = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.2", 443))]
+        with patch.object(newshound.socket, "getaddrinfo", return_value=addrs), \
+             patch.object(newshound.socket, "socket", Sock):
+            newshound._connect_fast(("x.example", 443), timeout=2)
+        self.assertEqual(seen, [2, 2])
+

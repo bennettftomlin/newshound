@@ -1,7 +1,7 @@
-http://www.justice.gov/atr/rss/atr_press.xml
-http://www.sec.gov/rss/litigation/admin.xml
-http://www.cftc.gov/RSS/RSSENF/rssenf.xml
-http://www.sec.gov/rss/news/press.xml
+https://www.justice.gov/news/rss
+https://www.sec.gov/enforcement-litigation/administrative-proceedings/rss
+https://www.cftc.gov/RSS/RSSENF/rssenf.xml
+https://www.sec.gov/news/pressreleases.rss
 https://www.courtlistener.com/feed/search/?type=r&type=r&q=htx&order_by=entry_date_filed+desc&
 https://www.courtlistener.com/feed/search/?type=r&q=%28michael+saylor%29+AND+dateFiled%3A%5Bnow-14d+TO+%2A%5D
 https://www.courtlistener.com/feed/search/?type=r&type=r&q=yuchen+sun&order_by=entry_date_filed+desc&
@@ -22,7 +22,7 @@ https://www.fca.org.uk/news/rss.xml
 https://www.consumerfinance.gov/about-us/newsroom/feed/
 https://www.ecb.europa.eu/rss/press.html
 https://www.whitehouse.gov/news/feed/
-https://trumpstruth.org/feed
+https://www.trumpstruth.org/feed
 https://ssf.gob.sv/seccion/noticias/feed/
 https://www.courtlistener.com/docket/73480398/feed/
 https://www.courtlistener.com/feed/search/?type=r&q=%28sam+altman%29+AND+dateFiled%3A%5Bnow-14d+TO+%2A%5D

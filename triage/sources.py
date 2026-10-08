@@ -16,10 +16,16 @@ Inc. -- Original document"):
   * everything else -> source-to-lede/resolve.py's link handlers and fetchers
     (SEC contact User-Agent, PDF paging, bot-wall detection), via webget.
 
+CourtListener API calls go through claude_knowledge's cl_match.cl_get (one shared budget; CLBudget when it is
+spent, which the loops stop on) and are cached in derived/courtlistener/cache.sqlite, shared with the morning gather:
+documents 30 days (6 hours when RECAP has no text yet), dockets 30 days, search pages 30 minutes.
+
 Deployment note: resolve.py and webget are local to this machine and the
 CourtListener token is read from ~/.config/courtlistener/token. A deployable
 version needs both vendored and the token in the environment.
 """
+import collections
+import contextvars
 import hashlib
 import html
 import json
@@ -119,48 +125,255 @@ def feed_label(url):
 
 
 # --- CourtListener ------------------------------------------------------------
+# One client, one budget, one cache (2026-10-08). On 2026-10-08 the account's 300-a-day cap ran out and a gather rerun
+# read text for 3 of 30 documents. This module had its own retry loop: four tries, 3/6/9 s apart on a 429, never
+# reading Retry-After, never telling other processes. Since then every call goes through claude_knowledge's
+# cl_match.cl_get, so CourtListener's Retry-After is recorded (cl_block) and honoured by every process, and the shared
+# 9/min, 70/h, 270/day window applies. Answers are kept in derived/courtlistener/cache.sqlite, which the morning
+# gather (it imports this module) and the triage both use. A document costs one docket-entries call for the whole
+# entry, exhibits included, where it used to cost recap-documents + docket-entries + dockets.
+KB = NH.parent                               # claude_knowledge
+if str(NH) not in sys.path:
+    sys.path.append(str(NH))
+import clpace                                # noqa: E402  (newshound/clpace.py: the short-wait rule, CLBudget)
+
+CLBudget = clpace.CLBudget                   # what a caller catches to stop: the budget is spent for now
+UA = "newshound-triage (Protos)"
+
+
+def _ua():
+    """UA with Bennett's contact appended when one is configured (tools/edgar/research_ua.py reads it through
+    edgar_io.contact_ua and never prints it); UA as before otherwise."""
+    try:
+        edgar = str(KB / "tools" / "edgar")
+        if edgar not in sys.path:
+            sys.path.append(edgar)
+        import research_ua
+        return research_ua.user_agent("newshound-triage", fallback=UA)
+    except Exception:                                  # noqa: BLE001 -- the header must never break a request
+        return UA
+# Module switches, read at call time, never bound as default arguments (memory: default-arg-binds-constant), so
+# a check can point them at temporary files.
+CACHE_DB = KB / "derived" / "courtlistener" / "cache.sqlite"
+GRAPH_DB = KB / "derived" / "graph.sqlite"
+DOC_TTL = 30 * 86400                         # a document RECAP holds text for: the text does not change
+DOC_NOTEXT_TTL = 6 * 3600                    # no text yet: RECAP's OCR may land later in the day
+DOCKET_TTL = 30 * 86400                      # case name, court, number, nature of suit, cause
+SEARCH_TTL = 30 * 60                         # a search page: new filings arrive all day
+# Every API call, cache hit and graph hit this process made; the gather reads the deltas to say what a run cost.
+CL_STATS = collections.Counter()
+ENTRY_FIELDS = ("entry_number,date_filed,description,recap_documents__id,recap_documents__document_number,"
+                "recap_documents__attachment_number,recap_documents__description,"
+                "recap_documents__short_description,recap_documents__page_count,recap_documents__is_available,"
+                "recap_documents__plain_text,recap_documents__absolute_url")
+# docket-entries' serializer is a NestedDynamicFieldsMixin (cl/api/utils.py, freelawproject/courtlistener): a nested
+# field is selected as parent__child, split on "__" by get_fields_for_level_and_prefix (read in the source, not by
+# calling the API).
+
+
 def cl_token():
     t = os.environ.get("COURTLISTENER_TOKEN")
     f = pathlib.Path.home() / ".config" / "courtlistener" / "token"
     return t or (f.read_text().strip() if f.exists() else "")
 
 
-def _pace():
-    """claude_knowledge's shared CourtListener budget (newshound/clpace.py): every API attempt reserves a slot."""
-    parent = str(pathlib.Path(__file__).resolve().parent.parent)
-    if parent not in sys.path:
-        sys.path.append(parent)
-    import clpace
-    clpace.pace()
+def _cl_match():
+    return clpace._cl_match()
+
+
+_UA_ON = contextvars.ContextVar("newshound_triage_ua", default=False)
+
+
+class _UAHandler(urllib.request.BaseHandler):
+    """cl_match.cl_get builds its request with claude_knowledge's own User-Agent; a request made from here is
+    re-labelled newshound-triage, so CourtListener can tell the two apart. Acts only while sources.cl_get is
+    calling (a context variable), and only on courtlistener.com."""
+    handler_order = 900
+
+    def http_request(self, req):
+        if _UA_ON.get() and (req.host or "").lower().endswith("courtlistener.com"):
+            req.add_header("User-Agent", _ua())
+        return req
+
+    https_request = http_request
+
+
+def _ensure_ua_handler():
+    """Add _UAHandler to the opener urllib.request.urlopen uses (installing the default one first if none is),
+    keeping any opener another module installed."""
+    opener = urllib.request._opener
+    if opener is None:
+        opener = urllib.request.build_opener()
+        urllib.request.install_opener(opener)
+    if not any(type(h).__name__ == "_UAHandler" for h in opener.handlers):
+        opener.add_handler(_UAHandler())
 
 
 def cl_get(path, **params):
-    url = CL_API + path + ("?" + urllib.parse.urlencode(params, doseq=True) if params else "")
-    req = urllib.request.Request(url, headers={"Authorization": f"Token {cl_token()}",
-                                               "User-Agent": "newshound-triage (Protos)"})
-    for attempt in range(4):
-        _pace()                               # each retry too: a 429's retry is a request like any other
+    """One CourtListener API GET, through cl_match.cl_get: the shared pace window and every process's record of
+    CourtListener's Retry-After. A slot further off than clpace.MAX_WAIT seconds (two minutes; a launchd run or the
+    morning gather never stalls for an hour), a long 429 or a throttle body raises CLBudget; other errors raise
+    as they are."""
+    cl = _cl_match()
+    saved = cl.PACE_MAX_WAIT
+    cl.PACE_MAX_WAIT = min(saved, clpace.MAX_WAIT)
+    _ensure_ua_handler()
+    tok = _UA_ON.set(True)
+    try:
+        out = cl.cl_get(CL_API + path, params, cl_token())
+    except (cl.PaceExhausted, clpace.PaceWait) as e:
+        CL_STATS["budget"] += 1
+        raise CLBudget(str(e)) from e
+    except RuntimeError as e:
+        if str(e).startswith("throttled"):              # cl_get's throttle body in a 200
+            CL_STATS["budget"] += 1
+            raise CLBudget(str(e)) from e
+        CL_STATS["api"] += 1
+        raise
+    except Exception:
+        CL_STATS["api"] += 1
+        raise
+    finally:
+        _UA_ON.reset(tok)
+        cl.PACE_MAX_WAIT = saved
+    CL_STATS["api"] += 1
+    return out
+
+
+# --- the shared cache -----------------------------------------------------------
+def _cache():
+    path = pathlib.Path(CACHE_DB)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(path), timeout=30)
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass                                  # another process holds it mid-switch; WAL is set once and persists
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS documents (docket_id TEXT NOT NULL, entry_number INTEGER NOT NULL,
+            attachment_number INTEGER NOT NULL, payload TEXT NOT NULL, has_text INTEGER NOT NULL,
+            fetched_at REAL NOT NULL, PRIMARY KEY (docket_id, entry_number, attachment_number));
+        CREATE TABLE IF NOT EXISTS dockets (docket_id TEXT PRIMARY KEY, payload TEXT NOT NULL, fetched_at REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS searches (key TEXT PRIMARY KEY, payload TEXT NOT NULL, fetched_at REAL NOT NULL);
+    """)
+    return con
+
+
+def _cache_read(sql, args):
+    """One row or None; a cache that cannot be read is a miss, never an error."""
+    try:
+        con = _cache()
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
-                return json.loads(r.read())
-        except urllib.error.HTTPError as e:
-            if e.code in (429, 500, 502, 503, 504) and attempt < 3:
-                time.sleep(3 * (attempt + 1)); continue
-            raise
-        except (urllib.error.URLError, TimeoutError, socket.timeout):
-            if attempt < 3:
-                time.sleep(3 * (attempt + 1)); continue
-            raise
+            return con.execute(sql, args).fetchone()
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+
+
+def _cache_write(sql, rows):
+    try:
+        con = _cache()
+        try:
+            with con:
+                con.executemany(sql, rows)
+        finally:
+            con.close()
+    except sqlite3.Error:
+        pass                                  # the answer is still returned; it just costs a call next time
+
+
+def _att(n):
+    """The cache's attachment key: 0 for the main document (CourtListener's attachment_number None)."""
+    try:
+        return int(n or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _doc_cached(docket, num, att):
+    row = _cache_read("SELECT payload, has_text, fetched_at FROM documents WHERE docket_id=? AND entry_number=? "
+                      "AND attachment_number=?", (str(docket), int(num), _att(att)))
+    if not row:
+        return None
+    ttl = DOC_TTL if row[1] else DOC_NOTEXT_TTL
+    return json.loads(row[0]) if time.time() - row[2] < ttl else None
+
+
+def _doc_store(docket, num, records):
+    """records: {attachment_number or None: {"filing": ..., "text_excerpt"?: ...}}."""
+    now = time.time()
+    _cache_write("INSERT OR REPLACE INTO documents VALUES (?,?,?,?,?,?)",
+                 [(str(docket), int(num), _att(att), json.dumps(rec), 1 if rec.get("text_excerpt") else 0, now)
+                  for att, rec in records.items()])
+
+
+def _excerpt(text):
+    return re.sub(r"\s+", " ", text or "").strip()[:EXCERPT]
+
+
+def _record(entry, num, att, doc):
+    """What cl_document returns for one document, less the case: the filing and the opening of its text."""
+    rec = {"filing": {k: v for k, v in {
+        "entry_date": entry.get("date_filed"), "document_number": num, "attachment_number": att,
+        "event": doc.get("short_description") or None,
+        "description": strip_html(entry.get("description") or doc.get("description"))[:1200] or None,
+    }.items() if v is not None}}
+    text = _excerpt(doc.get("plain_text"))
+    if text:
+        rec["text_excerpt"] = text
+    return rec
+
+
+def _nested_ok(entry):
+    docs = entry.get("recap_documents") if entry else None
+    return isinstance(docs, list) and all(isinstance(d, dict) and "plain_text" in d for d in docs)
+
+
+def _fetch_entry(docket, num, want):
+    """ONE docket-entries call for the entry, its documents nested; every attachment it returns is cached under
+    its own key, so an entry's exhibits (USA Today v. OpenAI's 1, 1/1, 1/2) cost one call between them. When the
+    response lacks the nested documents (the field selection not honoured, or no entry came back), the old
+    recap-documents call answers for this document only."""
+    res = cl_get("docket-entries/", docket=docket, entry_number=num, fields=ENTRY_FIELDS).get("results", [])
+    entry = next((e for e in res if _nested_ok(e) and e.get("recap_documents")), None) or \
+        next((e for e in res if _nested_ok(e)), None)
+    if entry is None:
+        CL_STATS["fallback"] += 1
+        docs = cl_get("recap-documents/", docket_entry__docket__id=docket, document_number=num,
+                      fields="description,short_description,attachment_number,page_count,"
+                             "is_available,plain_text,absolute_url").get("results", [])
+        entry = next(iter(res), None) or {}
+        entry = {"date_filed": entry.get("date_filed"), "description": entry.get("description")}
+    else:
+        docs = entry["recap_documents"]
+    records = {}
+    for d in docs:
+        att = d.get("attachment_number") or None
+        records.setdefault(att, _record(entry, num, att, d))
+    if want not in records:
+        records[want] = _record(entry, num, want, {})         # RECAP has no such document yet: no text, short TTL
+    _doc_store(docket, num, records)
+    return records[want]
 
 
 def cl_search_docs(query, pages=2):
-    """The search feed's documents, from the API, newest entry first."""
+    """The search feed's documents, from the API, newest entry first. A page is cached SEARCH_TTL seconds under
+    its exact parameters, so the gather and a triage run in the same half hour share it."""
     docs, cursor = [], None
     for _ in range(pages):
         params = {"type": "r", "q": query, "order_by": "entry_date_filed desc"}
         if cursor:
             params["cursor"] = cursor
-        d = cl_get("search/", **params)
+        key = "search/?" + urllib.parse.urlencode(sorted(params.items()))
+        row = _cache_read("SELECT payload, fetched_at FROM searches WHERE key=?", (key,))
+        if row and time.time() - row[1] < SEARCH_TTL:
+            d = json.loads(row[0])
+            CL_STATS["search_cache"] += 1
+        else:
+            d = cl_get("search/", **params)
+            if isinstance(d, dict) and isinstance(d.get("results"), list):
+                _cache_write("INSERT OR REPLACE INTO searches VALUES (?,?,?)", [(key, json.dumps(d), time.time())])
         for r in d.get("results", []):
             case = {"name": r.get("caseName"), "court": r.get("court_citation_string") or r.get("court_id"),
                     "docket_number": r.get("docketNumber"), "nature_of_suit": r.get("suitNature") or None,
@@ -183,54 +396,94 @@ def cl_search_docs(query, pages=2):
     return docs
 
 
-_docket_cache = {}
+_docket_cache = {}       # this process's answers (from any of the three places below)
+_docket_failed = {}      # this process's non-budget failures: not asked again this run, never written to the cache
+
+
+def _graph_docket(docket_id):
+    """The docket from claude_knowledge's graph (cl_dockets, banked by the nightly CourtListener stages), or None.
+    The graph keeps no nature of suit or cause; those stay None."""
+    try:
+        con = sqlite3.connect(f"file:{urllib.parse.quote(str(GRAPH_DB))}?mode=ro", uri=True, timeout=10)
+    except sqlite3.Error:
+        return None
+    try:
+        row = con.execute("SELECT case_name, court, docket_number, date_filed FROM cl_dockets WHERE docket_id=?",
+                          (int(docket_id),)).fetchone()
+    except (sqlite3.Error, ValueError):
+        return None
+    finally:
+        con.close()
+    if not row or not row[0]:
+        return None
+    return {"name": row[0], "court": row[1], "docket_number": row[2], "nature_of_suit": None, "cause": None,
+            "filed": row[3]}
 
 
 def cl_docket(docket_id):
-    if docket_id not in _docket_cache:
+    """Case name, court, docket number, date filed, nature of suit and cause: from the graph, else the cache, else
+    one API call (then cached DOCKET_TTL). CLBudget propagates; any other failure returns {"error": ...}, kept for
+    this process only."""
+    key = str(docket_id)
+    if key in _docket_cache:
+        return _docket_cache[key]
+    if key in _docket_failed:
+        return _docket_failed[key]
+    row = _cache_read("SELECT payload, fetched_at FROM dockets WHERE docket_id=?", (key,))
+    cached = json.loads(row[0]) if row and time.time() - row[1] < DOCKET_TTL else None
+    case = _graph_docket(key)
+    if case:
+        CL_STATS["docket_graph"] += 1
+        for k in ("nature_of_suit", "cause"):         # the graph has none; a cached API answer may
+            if cached and cached.get(k):
+                case[k] = cached[k]
+    elif cached:
+        CL_STATS["docket_cache"] += 1
+        case = cached
+    else:
         try:
-            d = cl_get(f"dockets/{docket_id}/", fields="case_name,court_id,docket_number,date_filed,"
-                                                       "nature_of_suit,cause")
-            _docket_cache[docket_id] = {"name": d.get("case_name"), "court": d.get("court_id"),
-                                        "docket_number": d.get("docket_number"),
-                                        "nature_of_suit": d.get("nature_of_suit") or None,
-                                        "cause": d.get("cause") or None, "filed": d.get("date_filed")}
-        except Exception as e:
-            _docket_cache[docket_id] = {"error": f"{type(e).__name__}"}
-    return _docket_cache[docket_id]
+            d = cl_get(f"dockets/{key}/", fields="case_name,court_id,docket_number,date_filed,nature_of_suit,cause")
+        except CLBudget:
+            raise
+        except Exception as e:                        # noqa: BLE001
+            _docket_failed[key] = {"error": type(e).__name__}
+            return _docket_failed[key]
+        case = {"name": d.get("case_name"), "court": d.get("court_id"), "docket_number": d.get("docket_number"),
+                "nature_of_suit": d.get("nature_of_suit") or None, "cause": d.get("cause") or None,
+                "filed": d.get("date_filed")}
+        _cache_write("INSERT OR REPLACE INTO dockets VALUES (?,?,?)", [(key, json.dumps(case), time.time())])
+    _docket_cache[key] = case
+    return case
 
 
-def cl_document(link):
+def cl_document(link, case=None):
     """Docket text + opening text for one RECAP document URL, when search didn't carry it.
 
     The search API nests only a few documents under each docket, so a busy docket
     (Sun v. World Liberty Financial: 12 new documents in the feed) leaves most of
-    its feed entries unmatched. recap-documents and docket-entries answer per document.
+    its feed entries unmatched. docket-entries answers per entry, every document of it at once.
+
+    `case`: the case the caller already holds (the gather's search rows carry it from the search API); then no
+    docket lookup is made. CLBudget propagates, so a caller's loop stops on it; any other failure returns None.
     """
     m = re.search(r"/docket/(\d+)/(\d+)/(?:(\d+)/)?", link or "")
     if not m:
         return None
     docket, num, att = m.group(1), int(m.group(2)), m.group(3)
-    try:
-        docs = cl_get("recap-documents/", docket_entry__docket__id=docket, document_number=num,
-                      fields="description,short_description,attachment_number,page_count,"
-                             "is_available,plain_text,absolute_url").get("results", [])
-        entry = cl_get("docket-entries/", docket=docket, entry_number=num,
-                       fields="description,date_filed").get("results", [])
-    except Exception:
-        return None
     want = int(att) if att else None
-    doc = next((d for d in docs if (d.get("attachment_number") or None) == want), docs[0] if docs else {})
-    e = entry[0] if entry else {}
-    out = {"case": cl_docket(docket),
-           "filing": {k: v for k, v in {
-               "entry_date": e.get("date_filed"), "document_number": num,
-               "attachment_number": want, "event": doc.get("short_description") or None,
-               "description": strip_html(e.get("description") or doc.get("description"))[:1200] or None,
-           }.items() if v is not None}}
-    text = re.sub(r"\s+", " ", doc.get("plain_text") or "").strip()
-    if text:
-        out["text_excerpt"] = text[:EXCERPT]
+    got = _doc_cached(docket, num, want)
+    if got is not None:
+        CL_STATS["doc_cache"] += 1
+    else:
+        try:
+            got = _fetch_entry(docket, num, want)
+        except CLBudget:
+            raise
+        except Exception:                             # noqa: BLE001
+            return None
+    out = {"case": case if case else cl_docket(docket), "filing": got["filing"]}
+    if got.get("text_excerpt"):
+        out["text_excerpt"] = got["text_excerpt"]
     return out
 
 
@@ -271,6 +524,18 @@ def collect(log=print):
     kws = read_lines("keywords.md")
     pat = keyword_pattern(kws)
     items = []
+    budget = []          # set once the CourtListener budget is spent: no further API call this run
+
+    def api(fn, *a, **k):
+        """fn(*a, **k), or None once the budget is spent (said once; the items stay, thinner)."""
+        if budget:
+            return None
+        try:
+            return fn(*a, **k)
+        except CLBudget as e:
+            budget.append(str(e))
+            log(f"  ! CourtListener budget spent, no further API calls this run: {e}")
+            return None
     for url in read_lines("rss.md"):
         label = feed_label(url)
         try:
@@ -283,7 +548,7 @@ def collect(log=print):
         if "courtlistener.com/feed/search" in url:
             q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("q", [""])[0]
             try:
-                docs = cl_search_docs(q)
+                docs = api(cl_search_docs, q) or []
             except Exception as e:
                 log(f"  ! CourtListener API for {q!r}: {type(e).__name__}")
         kept = 0
@@ -319,7 +584,7 @@ def collect(log=print):
                         state["text_excerpt"] = doc["text"]
                     how = "courtlistener-search-api"
                 else:
-                    got = None if bare else cl_document(link)
+                    got = None if bare else api(cl_document, link)
                     if got:
                         state.update(got)
                         how = "courtlistener-document-api"
@@ -329,7 +594,7 @@ def collect(log=print):
                             state["text_excerpt"] = snippet[:EXCERPT]
             elif is_cl:
                 m = re.search(r"/docket/(\d+)/", url)
-                case = cl_docket(m.group(1)) if m else {}
+                case = (api(cl_docket, m.group(1)) or {}) if m else {}
                 state["watch_term"] = case.get("name") or e.get("title", "")
                 if case and "error" not in case:
                     state["case"] = case
@@ -394,11 +659,16 @@ def reenrich(items, log=print):
     The item set is the alert HISTORY, pinned to the feed list as it was when it was
     collected; re-reading rss.md after an edit would silently swap in different feeds.
     """
-    fixed = 0
+    fixed, budget = 0, None
     for it in items:
         st = it["state"]
-        if it["enriched"] == "rss-only" and "/docket/" in (it["link"] or ""):
-            got = cl_document(it["link"])
+        if it["enriched"] == "rss-only" and "/docket/" in (it["link"] or "") and not budget:
+            try:
+                got = cl_document(it["link"])
+            except CLBudget as e:
+                budget = e
+                log(f"  ! CourtListener budget spent, no further documents this run: {e}")
+                continue
             if got:
                 st.update(got); it["enriched"] = "courtlistener-document-api"; fixed += 1
         elif it["enriched"].startswith("resolve:") and not st.get("text_excerpt") and it["link"]:

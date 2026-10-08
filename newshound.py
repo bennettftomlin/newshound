@@ -18,6 +18,44 @@ import urllib.request
 # unresponsive server would otherwise stall the whole run.
 socket.setdefaulttimeout(30)
 
+# Connecting gets its own, shorter limit PER ADDRESS. The 30 s default applied to the connect as well, so a host
+# with one dead address among several cost the full 30 s before Python tried the next: ssf.gob.sv has four
+# addresses, one of which (54.147.109.227, 2026-10-08) accepts no connection -- 170+ "SLOW 30s" lines in the log,
+# every one a read that then succeeded on the next address. A live server answers a connect in well under a
+# second; a slow feed (CourtListener's searches take 11-62 s to build) is slow to ANSWER, and keeps the full read
+# timeout once connected.
+CONNECT_TIMEOUT = 5
+_create_connection = socket.create_connection
+
+
+def _connect_fast(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, *args, **kwargs):
+    """socket.create_connection with CONNECT_TIMEOUT per address, then the caller's (or the default) timeout for
+    everything after the connect. Same addresses, same order, same errors as the original."""
+    after = socket.getdefaulttimeout() if timeout is socket._GLOBAL_DEFAULT_TIMEOUT else timeout
+    per = CONNECT_TIMEOUT if after is None else min(CONNECT_TIMEOUT, after)
+    host, port = address[0], address[1]
+    err = None
+    for af, socktype, proto, _canon, sa in socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM):
+        sock = None
+        try:
+            sock = socket.socket(af, socktype, proto)
+            sock.settimeout(per)
+            if source_address:
+                sock.bind(source_address)
+            sock.connect(sa)
+            sock.settimeout(after)
+            return sock
+        except OSError as e:
+            err = e
+            if sock is not None:
+                sock.close()
+    if err is not None:
+        raise err
+    raise OSError(f"getaddrinfo returned no address for {host}")
+
+
+socket.create_connection = _connect_fast
+
 DB_PATH = os.environ.get("NEWSHOUND_DB", "last_processed.db")
 BARE_COURTLISTENER = ("https://www.courtlistener.com", "https://www.courtlistener.com/")
 
@@ -64,6 +102,18 @@ def initialize_db():
     cursor.execute("INSERT OR IGNORE INTO cases_seen (key, feed_source, first_seen) "
                    "SELECT key, feed_source, datetime('now') FROM sent_keys WHERE key LIKE 'case:%'")
     cursor.execute("DELETE FROM sent_keys WHERE key LIKE 'case:%'")
+    # When each CourtListener feed is next read (see CL_SEARCH_INTERVAL). Every other feed is read every run and
+    # never has a row. newest_ts is the newest entry the feed has shown (epoch seconds, UTC), NULL until known.
+    cursor.execute("CREATE TABLE IF NOT EXISTS feed_schedule "
+                   "(feed_source TEXT PRIMARY KEY, next_due REAL, interval REAL, newest_ts REAL)")
+    # Every non-CourtListener feed's ETag and Last-Modified from its last full (200) read, sent back as If-None-Match /
+    # If-Modified-Since (see load_validators). keywords is the keyword list they were stored under.
+    cursor.execute("CREATE TABLE IF NOT EXISTS feed_validators "
+                   "(feed_source TEXT PRIMARY KEY, etag TEXT, modified TEXT, keywords TEXT)")
+    # Every non-CourtListener feed's run of consecutive failed reads, and when a feed in backoff is next read (see
+    # record_read). No row: the last read succeeded.
+    cursor.execute("CREATE TABLE IF NOT EXISTS feed_health "
+                   "(feed_source TEXT PRIMARY KEY, failures INTEGER, skip_until REAL, last_error TEXT)")
     conn.commit()
     if cursor.execute("SELECT COUNT(*) FROM sent_keys").fetchone()[0] == 0:
         rows = cursor.execute("SELECT feed_source, item_id FROM processed_items").fetchall()
@@ -176,9 +226,15 @@ def get_entry_text(entry):
 FEED_AGENT = os.environ.get("FEED_USER_AGENT", "").strip()
 
 
-def parse_feed(feed_url):
-    return feedparser.parse(feed_url, agent=FEED_AGENT) if FEED_AGENT \
-        else feedparser.parse(feed_url)
+def parse_feed(feed_url, etag=None, modified=None):
+    """feedparser's read of feed_url, conditional when etag / modified are given: an unchanged feed then answers 304
+    with no body, and feedparser returns status 304 and no entries."""
+    kwargs = {"agent": FEED_AGENT} if FEED_AGENT else {}
+    if etag:
+        kwargs["etag"] = etag
+    if modified:
+        kwargs["modified"] = modified
+    return feedparser.parse(feed_url, **kwargs)
 
 
 def pre_filtered(feed_url):
@@ -278,7 +334,7 @@ def record_key(conn, key, feed_url):
         conn.execute("INSERT OR IGNORE INTO sent_keys (key, feed_source) VALUES (?, ?)", (key, feed_url))
     conn.commit()
 
-# Every raw entry newshound reads from a non-CourtListener feed, logged once (2026-10-08). The morning gather reads
+# Every raw entry newshound reads from any feed, CourtListener's included, logged once (2026-10-08). The morning gather reads
 # its feeds once a day; DOJ's national stream holds 25 items, a few hours of it, so a release newshound alerted on
 # (Spalletta, SDNY) had scrolled out before the 07:55 read. This log is what the gather merges back.
 ENTRY_LOG = os.environ.get("NEWSHOUND_ENTRY_LOG",
@@ -320,15 +376,18 @@ def _load_entry_log():
 
 def log_entries(feed_url, entries):
     """Append each entry of this feed not logged before: the raw guid, link, title, summary and published time, as
-    the feed served them (before check_and_alert rewrites an entry's id). CourtListener feeds are left out: the
-    gather reads and enriches those live. A write failure is printed, never fatal to the alerts."""
-    if "courtlistener.com" in feed_url:
-        return 0
+    the feed served them (before check_and_alert rewrites an entry's id). CourtListener feeds are logged too (since
+    2026-10-08): newshound reads each on its own schedule, and the morning gather reuses what it logged rather than
+    reading 41 CourtListener feeds again. A write failure is printed, never fatal to the alerts."""
     seen = _load_entry_log()
     now, rows = time.time(), []
     for e in entries:
         guid = e.get("id")               # as served: None when the feed gives no guid (the gather then hashes link+title)
         key = guid or e.get("link")
+        if guid in BARE_COURTLISTENER:
+            # CourtListener gives every entry with no document of its own the site root as its guid, so keyed on the
+            # guid only a feed's first such entry would ever be logged. The guid itself is still logged as served.
+            key = item_identifier(e)
         if not key or (feed_url, key) in seen:
             continue
         pp = e.get("published_parsed") or e.get("updated_parsed")
@@ -354,13 +413,32 @@ def check_and_alert(feed_url, conn, sent_keys=None):
     # new key. Record what it holds now without posting; alert from the next item on.
     first_sight = conn.execute("SELECT 1 FROM feeds_seen WHERE feed_source = ?",
                                (feed_url,)).fetchone() is None
-    feed = parse_feed(feed_url)
+    keywords = get_keywords()
+    feed = parse_feed(feed_url, **load_validators(conn, feed_url, keywords))
+    try:
+        return handle_feed(feed_url, conn, sent_keys, feed, first_sight, keywords, processed_ids)
+    except Exception as exc:
+        # The read itself worked; what failed came after it (a Slack post). Say so, so the run does not count it
+        # against the feed's health (record_read).
+        try:
+            exc.feed_read = feed
+        except AttributeError:
+            pass
+        raise
+
+
+def handle_feed(feed_url, conn, sent_keys, feed, first_sight, keywords, processed_ids):
+    """Log, filter, alert on and record one feed's read: check_and_alert after the fetch."""
+    # 304 Not Modified: nothing changed since the last full read, whose entries were all handled then. Not an empty
+    # feed, and no state to touch; the stored validators go out again next run.
+    if getattr(feed, "status", None) == 304:
+        return feed
     log_entries(feed_url, feed.entries)
     # An empty feed is not an exception. Say so, or a dead source looks identical
     # to a quiet one -- which is how the SEC feeds hid for as long as they did.
     if getattr(feed, "status", 200) >= 400 or not feed.entries:
         print(f"EMPTY feed (http={getattr(feed, 'status', '?')}): {feed_url}")
-    keyword_pattern = build_keyword_pattern(get_keywords())
+    keyword_pattern = build_keyword_pattern(keywords)
     per_case = new_case_feed(feed_url)
     new_items = []
 
@@ -409,7 +487,8 @@ def check_and_alert(feed_url, conn, sent_keys=None):
         print(f"NEW FEED: recorded {len(new_items)} existing item(s) without alerting: {feed_url}")
         for item in new_items:
             print(f"    - {item.get('title', '')[:100]} {item.get('link', '')}")
-        return
+        save_validators(conn, feed_url, feed, keywords)
+        return feed
 
     if new_items:
         print(f"Found {len(new_items)} matching items.")
@@ -444,6 +523,10 @@ def check_and_alert(feed_url, conn, sent_keys=None):
                 sent_keys.add(item['_case'])
             if os.environ.get("LOCAL_TESTING") != "True":
                 time.sleep(10)
+    # Last, once every item is sent and recorded: validators saved earlier would let a run stopped mid-feed come back
+    # to a 304 and never send the rest.
+    save_validators(conn, feed_url, feed, keywords)
+    return feed
 
 def get_rss_feeds():
     # utf-8-sig strips a real BOM; the old lstrip('ufeff') only stripped the
@@ -453,36 +536,289 @@ def get_rss_feeds():
     return [line for line in lines if line]
 
 
+# --- How often each CourtListener feed is read (2026-10-08) -------------------------------------------------------
+# CourtListener is shared, donor-funded infrastructure. Its /feeds/ page offers the feeds to "an app or other program
+# that can regularly check the feed" -- regularly, not every ten minutes. The 2026-10-08 audit counted 41 CourtListener
+# feeds in rss.md read on every one of launchd's 144 runs a day: ~5,900 requests a day (~3,500 on a day of failed
+# runs). Conditional requests are no help: measured 2026-10-08, a docket feed answered an If-Modified-Since matching
+# its own Last-Modified with 200 and the full body, so how often we ask is the only lever. A docket's newest entry
+# says how active it is; every other feed is still read on every run.
+CL_HOST = "www.courtlistener.com"
+CL_SEARCH_INTERVAL = 30 * 60           # /feed/search/ (new cases, every filing matching a query): every 30 min
+CL_ACTIVE_DAYS = 2                     # a docket whose newest entry is at most this old ...
+CL_ACTIVE_INTERVAL = 30 * 60           # ... every 30 min
+CL_RECENT_DAYS = 14                    # newest entry at most this old ...
+CL_RECENT_INTERVAL = 2 * 3600          # ... every 2 h
+CL_STALE_INTERVAL = 6 * 3600           # older, or no dated entry at all: every 6 h
+CL_RETRY_INTERVAL = 30 * 60            # a read that failed (both attempts, or an HTTP error) is tried again in 30 min
+CL_FEED_GAP = 1                        # seconds between CourtListener reads in one run
+# launchd starts a run every 600 s and a feed is reached some seconds into it, at a slightly different point each run.
+# Due exactly `interval` after the last read, a 30 min feed would be a few seconds short of due on the run 30 min later
+# and wait for the next one: 40 min, not 30. Due half a run early, it is read on the run nearest its interval.
+CL_RUN_SLACK = 300
+
+
+def is_courtlistener(feed_url):
+    return (urllib.parse.urlparse(feed_url).hostname or "").lower() == CL_HOST
+
+
+def cl_search_feed(feed_url):
+    return urllib.parse.urlparse(feed_url).path.startswith("/feed/search/")
+
+
+def cl_interval(feed_url, newest_ts, now):
+    """Seconds until a CourtListener feed is read again: a search feed every CL_SEARCH_INTERVAL, a docket feed by the
+    age of its newest entry."""
+    if cl_search_feed(feed_url):
+        return CL_SEARCH_INTERVAL
+    if newest_ts is None:
+        return CL_STALE_INTERVAL
+    age = now - newest_ts
+    if age <= CL_ACTIVE_DAYS * 86400:
+        return CL_ACTIVE_INTERVAL
+    if age <= CL_RECENT_DAYS * 86400:
+        return CL_RECENT_INTERVAL
+    return CL_STALE_INTERVAL
+
+
+def cl_first_window(feed_url):
+    """The window a feed with no schedule row is staggered across. A docket's activity is unknown until it is read
+    under the schedule, so it gets the shortest docket interval: no docket waits longer than 30 min for that read."""
+    return CL_SEARCH_INTERVAL if cl_search_feed(feed_url) else CL_ACTIVE_INTERVAL
+
+
+def cl_stagger(feed_url, window):
+    """A stable offset in [0, window) from the URL alone (sha256, not hash(), which changes every process), so the
+    CourtListener feeds come due spread across the window rather than all in one run."""
+    return int.from_bytes(hashlib.sha256(feed_url.encode()).digest()[:8], "big") % int(window)
+
+
+def newest_entry_ts(feed):
+    """The newest entry's time (epoch seconds, UTC) -- or, when no entry is dated, the Last-Modified header -- or
+    None."""
+    stamps = [calendar.timegm(pp) for e in getattr(feed, "entries", []) or []
+              for pp in [e.get("published_parsed") or e.get("updated_parsed")] if pp]
+    if stamps:
+        return max(stamps)
+    headers = getattr(feed, "headers", None) or {}
+    modified = headers.get("last-modified") or headers.get("Last-Modified")
+    if modified:
+        try:
+            import email.utils
+            return email.utils.parsedate_to_datetime(modified).timestamp()
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def cl_due(conn, feed_url, now):
+    """Whether a CourtListener feed is read this run. A feed never fetched (not in feeds_seen) is read now, so its
+    first-sight baseline happens when it is added. A known feed with no schedule row gets one, staggered."""
+    row = conn.execute("SELECT next_due FROM feed_schedule WHERE feed_source = ?", (feed_url,)).fetchone()
+    if row is None:
+        if conn.execute("SELECT 1 FROM feeds_seen WHERE feed_source = ?", (feed_url,)).fetchone() is None:
+            return True
+        window = cl_first_window(feed_url)
+        conn.execute("INSERT INTO feed_schedule (feed_source, next_due, interval, newest_ts) VALUES (?, ?, ?, NULL)",
+                     (feed_url, now + cl_stagger(feed_url, window), window))
+        conn.commit()
+        row = conn.execute("SELECT next_due FROM feed_schedule WHERE feed_source = ?", (feed_url,)).fetchone()
+    return row[0] <= now
+
+
+def cl_reschedule(conn, feed_url, feed, now):
+    """Set when a CourtListener feed is next read, after this run read it. feed is what check_and_alert returned, None
+    when both attempts raised. An HTTP error parses as an empty feed rather than raising, and is a failure too: a 429
+    or 503 is no evidence the docket went quiet. A failure keeps the newest entry already known."""
+    row = conn.execute("SELECT newest_ts FROM feed_schedule WHERE feed_source = ?", (feed_url,)).fetchone()
+    known = row[0] if row else None
+    if read_ok(feed):
+        newest = max([t for t in (known, newest_entry_ts(feed)) if t is not None], default=None)
+        interval = cl_interval(feed_url, newest, now)
+        next_due = now + interval - CL_RUN_SLACK
+    else:
+        newest = known
+        interval = cl_interval(feed_url, newest, now)
+        next_due = now + CL_RETRY_INTERVAL - CL_RUN_SLACK
+    conn.execute("INSERT OR REPLACE INTO feed_schedule (feed_source, next_due, interval, newest_ts) VALUES (?, ?, ?, ?)",
+                 (feed_url, next_due, interval, newest))
+    conn.commit()
+    return next_due
+
+
+# --- Conditional reads and failure backoff for every other feed (2026-10-08) ----------------------------------------
+# Every non-CourtListener feed was downloaded in full on each of launchd's 144 runs a day. Measured 2026-10-08, the
+# gov.uk FCDO atom, OCC, FDIC (govdelivery), Federal Reserve, FCA, CFPB, ECB, White House and ssf.gob.sv feeds answer
+# a conditional request with 304 and no body, so each sends back the ETag / Last-Modified of its last 200.
+# CourtListener ignores them (its feeds are paced by feed_schedule instead) and is sent none, as before.
+# A feed that keeps failing -- the Federal Reserve's 404s, cftc.gov's 403s and 60 s stalls -- was asked again every
+# run. After BACKOFF_TIERS consecutive failures it is left alone for a while, saying so once per step.
+BACKOFF_TIERS = ((10, 6 * 3600), (6, 2 * 3600), (3, 30 * 60))     # (consecutive failures, seconds not read)
+
+
+def keywords_signature(keywords):
+    return hashlib.sha256("\n".join(keywords).encode()).hexdigest()
+
+
+def load_validators(conn, feed_url, keywords):
+    """{etag, modified} to send with this feed's read: what its last 200 carried. None for CourtListener, and none
+    when the keyword list changed since: a 304 would skip re-scanning the items already in the feed, which a new
+    keyword can match."""
+    if is_courtlistener(feed_url):
+        return {}
+    row = conn.execute("SELECT etag, modified, keywords FROM feed_validators WHERE feed_source = ?",
+                       (feed_url,)).fetchone()
+    if row is None or row[2] != keywords_signature(keywords):
+        return {}
+    # Apache's mod_deflate serves a compressed body under the ETag plus "-gzip" and then fails to match that ETag sent
+    # back (measured 2026-10-08, ssf.gob.sv: "X-gzip" -> 200, "X" -> 304). Sent without the suffix it matches; a server
+    # whose ETag really ends so just answers 200, as with no ETag.
+    etag = re.sub(r'-(?:gzip|br|deflate)"$', '"', row[0]) if row[0] else None
+    return {k: v for k, v in (("etag", etag), ("modified", row[1])) if v}
+
+
+def save_validators(conn, feed_url, feed, keywords):
+    """Store the validators of a 200 (none if it carried none). Any other answer but a 304 drops them: a redirect or
+    an error is no full read, and a stored ETag sent through a redirect comes back as a 304 hidden behind the
+    redirect's status."""
+    if is_courtlistener(feed_url):
+        return
+    status = getattr(feed, "status", None)
+    if status == 304:
+        return
+    if status == 200:
+        etag, modified = getattr(feed, "etag", None), getattr(feed, "modified", None)
+        conn.execute("INSERT OR REPLACE INTO feed_validators (feed_source, etag, modified, keywords) "
+                     "VALUES (?, ?, ?, ?)", (feed_url, etag, modified, keywords_signature(keywords)))
+    else:
+        conn.execute("DELETE FROM feed_validators WHERE feed_source = ?", (feed_url,))
+    conn.commit()
+
+
+def read_ok(feed):
+    """Whether a read succeeded. feed is what check_and_alert returned, None when both attempts raised. An HTTP error
+    parses as an empty feed rather than raising; a connection error as one with no status at all. 304 is a success."""
+    if feed is None:
+        return False
+    status = getattr(feed, "status", None)
+    return status < 400 if status is not None else bool(getattr(feed, "entries", None))
+
+
+def read_error(feed, exc_note=None):
+    """A short reason for a failed read, for the BACKOFF line."""
+    if feed is None:
+        return exc_note or "no answer"
+    status = getattr(feed, "status", None)
+    if status is not None:
+        return f"http={status}"
+    bozo = feed.get("bozo_exception") if hasattr(feed, "get") else getattr(feed, "bozo_exception", None)
+    return type(bozo).__name__ if bozo is not None else "no status"
+
+
+def backoff_seconds(failures):
+    return next((wait for n, wait in BACKOFF_TIERS if failures >= n), 0)
+
+
+def span(seconds):
+    return f"{seconds // 3600:g}h" if seconds % 3600 == 0 else f"{seconds // 60:g}m"
+
+
+def feed_due(conn, feed_url, now):
+    """Whether a non-CourtListener feed is read this run: always, unless it is in backoff."""
+    row = conn.execute("SELECT skip_until FROM feed_health WHERE feed_source = ?", (feed_url,)).fetchone()
+    return row is None or not row[0] or row[0] <= now
+
+
+def record_read(conn, feed_url, ok, error, now):
+    """Count a non-CourtListener feed's consecutive failures. At 3, 6 and 10 it is left unread for 30 min, 2 h and 6 h
+    after each failure (due half a run early, as CL_RUN_SLACK explains), with one BACKOFF line at each step; a
+    success clears the count, with one RECOVERED line if the feed had been in backoff."""
+    row = conn.execute("SELECT failures FROM feed_health WHERE feed_source = ?", (feed_url,)).fetchone()
+    failures = row[0] if row else 0
+    if ok:
+        if row is not None:
+            conn.execute("DELETE FROM feed_health WHERE feed_source = ?", (feed_url,))
+            conn.commit()
+        if backoff_seconds(failures):
+            print(f"RECOVERED after {failures} failures: {feed_url}")
+        return
+    failures += 1
+    wait = backoff_seconds(failures)
+    skip_until = now + wait - CL_RUN_SLACK if wait else None
+    conn.execute("INSERT OR REPLACE INTO feed_health (feed_source, failures, skip_until, last_error) "
+                 "VALUES (?, ?, ?, ?)", (feed_url, failures, skip_until, error))
+    conn.commit()
+    if wait and wait != backoff_seconds(failures - 1):
+        print(f"BACKOFF {span(wait)} after {failures} failures ({error}): {feed_url}")
+
+
+def run(conn, feed_urls, sent_keys=None):
+    """Read every feed once -- CourtListener's only when due, any other only when not in backoff -- and return
+    [(feed url, error)] for those that failed."""
+    if sent_keys is None:
+        sent_keys = get_sent_keys(conn)
+    failures = []
+    cl_total = cl_read = cl_skipped = 0
+    for feed_url in feed_urls:
+        cl = is_courtlistener(feed_url)
+        if cl:
+            cl_total += 1
+            if not cl_due(conn, feed_url, time.time()):
+                cl_skipped += 1
+                continue
+            cl_read += 1
+            if os.environ.get("LOCAL_TESTING") != "True":
+                time.sleep(CL_FEED_GAP)
+        elif not feed_due(conn, feed_url, time.time()):
+            continue
+        # One feed must never cost the rest of the run. socket.setdefaulttimeout
+        # stops a dead server stalling us, but feedparser lets the TimeoutError
+        # propagate, so before this guard the first slow feed aborted the loop and
+        # every feed BELOW it in rss.md went unchecked -- silently, because the
+        # next cycle starts again at the top. 148 such aborts in the error log.
+        t0 = time.time()
+        parsed = exc_note = read_anyway = None
+        try:
+            parsed = check_and_alert(feed_url, conn, sent_keys)
+        except Exception as exc:
+            # Measured 2026-09-17: the two feeds that time out in production
+            # (q=htx, q=yuchen+sun) answer in 0.3-0.4s when asked directly, so
+            # a 30s read timeout is not a ceiling set too low -- it is an
+            # intermittent stall on a fast server. Raising the ceiling would
+            # only make a bad cycle slower. One retry is the mitigation that
+            # matches the fault; if it fails twice, record it and move on.
+            time.sleep(2)
+            try:
+                parsed = check_and_alert(feed_url, conn, sent_keys)
+                print(f"RETRY OK after {type(exc).__name__}: {feed_url}")
+            except Exception as exc2:
+                exc_note = f"{type(exc2).__name__} x2"
+                failures.append((feed_url, exc_note))
+                read_anyway = getattr(exc2, "feed_read", None)
+        if cl:
+            try:
+                cl_reschedule(conn, feed_url, parsed, time.time())
+            except sqlite3.Error as exc:
+                print(f"CourtListener schedule not saved ({type(exc).__name__}: {exc}): {feed_url}")
+        else:
+            try:
+                read = parsed if parsed is not None else read_anyway
+                ok = read_ok(read)
+                record_read(conn, feed_url, ok, None if ok else read_error(read, exc_note), time.time())
+            except sqlite3.Error as exc:
+                print(f"feed health not saved ({type(exc).__name__}: {exc}): {feed_url}")
+        slow = time.time() - t0
+        if slow > 10:
+            print(f"SLOW {slow:.0f}s: {feed_url}")
+    if cl_total:
+        print(f"CourtListener: read {cl_read} of {cl_total} feeds due ({cl_skipped} not due)")
+    return failures
+
+
 if __name__ == "__main__":
     conn = initialize_db()
-    sent_keys = get_sent_keys(conn)
-    failures = []
     try:
-        for feed_url in get_rss_feeds():
-            # One feed must never cost the rest of the run. socket.setdefaulttimeout
-            # stops a dead server stalling us, but feedparser lets the TimeoutError
-            # propagate, so before this guard the first slow feed aborted the loop and
-            # every feed BELOW it in rss.md went unchecked -- silently, because the
-            # next cycle starts again at the top. 148 such aborts in the error log.
-            t0 = time.time()
-            try:
-                check_and_alert(feed_url, conn, sent_keys)
-            except Exception as exc:
-                # Measured 2026-09-17: the two feeds that time out in production
-                # (q=htx, q=yuchen+sun) answer in 0.3-0.4s when asked directly, so
-                # a 30s read timeout is not a ceiling set too low -- it is an
-                # intermittent stall on a fast server. Raising the ceiling would
-                # only make a bad cycle slower. One retry is the mitigation that
-                # matches the fault; if it fails twice, record it and move on.
-                time.sleep(2)
-                try:
-                    check_and_alert(feed_url, conn, sent_keys)
-                    print(f"RETRY OK after {type(exc).__name__}: {feed_url}")
-                except Exception as exc2:
-                    failures.append((feed_url, f"{type(exc2).__name__} x2"))
-            slow = time.time() - t0
-            if slow > 10:
-                print(f"SLOW {slow:.0f}s: {feed_url}")
+        failures = run(conn, get_rss_feeds(), get_sent_keys(conn))
     finally:
         conn.close()
     if failures:
