@@ -6,9 +6,15 @@ probabilities. If the wording changes, it changes for both -- a comparison betwe
 two models asked different questions measures the questions.
 
 Score levels are 0-indexed, as Jev returns them.
+
+V1 (2026-09-23 run 20260923T082831) framed interest for a crypto outlet only;
+the beat is crypto, AI and finance, and Jev -- following the rubric literally --
+scored OpenAI, Anthropic and xAI litigation near 0. V1's "buried detail" noul was
+answered yes ~0.98 of the time by gemma and 0.83 by Jev: a named person in any
+filing satisfied it. Every run directory snapshots the questions it was asked.
 """
 
-QUESTIONS = {
+QUESTIONS_V1 = {
     "substantive": {
         "type": "noul",
         "instructions": (
@@ -79,5 +85,37 @@ QUESTIONS = {
             "true": "At least one specific, reportable detail of that kind is in the text.",
             "false": "No such detail, or the text is too thin to tell.",
         },
+    },
+}
+
+
+BEAT = ("an investigative news outlet that covers crypto, AI companies and finance: the companies "
+        "and their executives, fraud, enforcement, litigation, regulation, and the politics around them")
+
+QUESTIONS = {k: v for k, v in QUESTIONS_V1.items() if k not in ("protos_interest", "buried_detail")}
+QUESTIONS["protos_interest"] = {
+    "type": "score",
+    "instructions": f"How much would a reader of {BEAT} want to be told about this item?",
+    "criteria": [
+        "Not at all: unrelated to crypto, AI or finance, or only incidentally connected.",
+        "Barely: a routine step in a case or matter such a reader might already follow.",
+        "Somewhat: a minor development in a known crypto, AI or finance story.",
+        ("Clearly: a new party, dollar amount, ruling or document that a reader following crypto, AI "
+         "or finance would want to know about."),
+        ("Must know: new charges, a new case, or an enforcement action against a crypto, AI or "
+         "financial company or a prominent figure in one, or a document exposing something not "
+         "previously public."),
+    ],
+}
+QUESTIONS["buried_detail"] = {
+    "type": "noul",
+    "instructions": (
+        "Would someone who read only this item's headline or case caption miss its most newsworthy "
+        "fact? For example, a dollar amount, an asset seized, a named executive or intermediary, or a "
+        "link between companies that appears only in the filing text."),
+    "criteria": {
+        "true": "The body carries a newsworthy specific that the headline or caption does not reveal.",
+        "false": ("The headline or caption already says what matters, or the item is routine or too thin "
+                  "to contain such a fact."),
     },
 }

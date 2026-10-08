@@ -172,7 +172,7 @@ def cl_search_docs(query, pages=2):
                              "document_number": doc.get("document_number"),
                              "attachment_number": doc.get("attachment_number"),
                              "event": doc.get("short_description") or None,
-                             "description": strip_html(doc.get("description")) or None,
+                             "description": strip_html(doc.get("description"))[:1200] or None,
                              "text": strip_html(doc.get("snippet"))[:EXCERPT] or None,
                              "page_count": doc.get("page_count"), "available": doc.get("is_available")})
         nxt = d.get("next")
@@ -200,6 +200,40 @@ def cl_docket(docket_id):
     return _docket_cache[docket_id]
 
 
+def cl_document(link):
+    """Docket text + opening text for one RECAP document URL, when search didn't carry it.
+
+    The search API nests only a few documents under each docket, so a busy docket
+    (Sun v. World Liberty Financial: 12 new documents in the feed) leaves most of
+    its feed entries unmatched. recap-documents and docket-entries answer per document.
+    """
+    m = re.search(r"/docket/(\d+)/(\d+)/(?:(\d+)/)?", link or "")
+    if not m:
+        return None
+    docket, num, att = m.group(1), int(m.group(2)), m.group(3)
+    try:
+        docs = cl_get("recap-documents/", docket_entry__docket__id=docket, document_number=num,
+                      fields="description,short_description,attachment_number,page_count,"
+                             "is_available,plain_text,absolute_url").get("results", [])
+        entry = cl_get("docket-entries/", docket=docket, entry_number=num,
+                       fields="description,date_filed").get("results", [])
+    except Exception:
+        return None
+    want = int(att) if att else None
+    doc = next((d for d in docs if (d.get("attachment_number") or None) == want), docs[0] if docs else {})
+    e = entry[0] if entry else {}
+    out = {"case": cl_docket(docket),
+           "filing": {k: v for k, v in {
+               "entry_date": e.get("date_filed"), "document_number": num,
+               "attachment_number": want, "event": doc.get("short_description") or None,
+               "description": strip_html(e.get("description") or doc.get("description"))[:1200] or None,
+           }.items() if v is not None}}
+    text = re.sub(r"\s+", " ", doc.get("plain_text") or "").strip()
+    if text:
+        out["text_excerpt"] = text[:EXCERPT]
+    return out
+
+
 # --- everything else: resolve.py -------------------------------------------------
 def page_text(url):
     """(text, how) for a non-CourtListener link, via resolve.py's handlers."""
@@ -219,8 +253,11 @@ def page_text(url):
             data = resolve.fetch(target)
             if data[:4] == b"%PDF":
                 return re.sub(r"\s+", " ", " ".join(resolve.pdf_pages(data)[:2]))[:EXCERPT], "resolve:pdf"
-        out = subprocess.run([resolve.WEBGET, target], capture_output=True, text=True, timeout=120)
-        text = re.sub(r"\s+", " ", out.stdout)
+        if resolve._is_sec(target):
+            text = strip_html(resolve.fetch(target).decode("utf-8", "replace"))
+        else:
+            out = subprocess.run([resolve.WEBGET, target], capture_output=True, text=True, timeout=120)
+            text = re.sub(r"\s+", " ", out.stdout)
         if len(text) < 200 or resolve._is_wall(text):
             return None, "resolve:empty-or-wall"
         return text[:EXCERPT], f"resolve:{man.get('kind', 'generic')}"
@@ -282,9 +319,14 @@ def collect(log=print):
                         state["text_excerpt"] = doc["text"]
                     how = "courtlistener-search-api"
                 else:
-                    snippet = strip_html(e.get("summary", "")).replace("Original document", "").strip()
-                    if snippet:
-                        state["text_excerpt"] = snippet[:EXCERPT]
+                    got = None if bare else cl_document(link)
+                    if got:
+                        state.update(got)
+                        how = "courtlistener-document-api"
+                    else:
+                        snippet = strip_html(e.get("summary", "")).replace("Original document", "").strip()
+                        if snippet:
+                            state["text_excerpt"] = snippet[:EXCERPT]
             elif is_cl:
                 m = re.search(r"/docket/(\d+)/", url)
                 case = cl_docket(m.group(1)) if m else {}
@@ -310,3 +352,83 @@ def collect(log=print):
             kept += 1
         log(f"  {label[:60]:60s} entries {len(feed.entries):3d} · kept {kept:3d}")
     return items
+
+
+def fill_from_twins(items, log=print):
+    """Docket text for search hits whose entry also arrived through a docket feed.
+
+    A docket feed carries each entry's docket text; a search hit for the same entry
+    (/docket/<id>/<n>/) may have none when the API is unavailable. Same court
+    record, so borrow it -- no API call.
+    """
+    twins = {}
+    for it in items:
+        m = re.search(r"/docket/(\d+)/[^#]*#entry-(\d+)", it["link"] or "")
+        if m and it["state"].get("filing", {}).get("description"):
+            twins[(m.group(1), m.group(2))] = it["state"]
+    filled = 0
+    for it in items:
+        m = re.search(r"/docket/(\d+)/(\d+)/", it["link"] or "")
+        if it["enriched"] == "rss-only" and m and (m.group(1), m.group(2)) in twins:
+            twin = twins[(m.group(1), m.group(2))]
+            it["state"]["filing"] = dict(twin["filing"])
+            if twin.get("case"):
+                it["state"]["case"] = twin["case"]
+            it["enriched"] = "docket-feed-twin"; filled += 1
+    log(f"filled {filled} item(s) from their docket-feed twins")
+    return items
+
+
+def cap_state(items, limit=1200):
+    """One docket description ran to 25,000 characters (collected before the cap)."""
+    for it in items:
+        f = it["state"].get("filing") or {}
+        if f.get("description") and len(f["description"]) > limit:
+            f["description"] = f["description"][:limit]
+    return items
+
+
+def reenrich(items, log=print):
+    """Fill gaps in an existing item set without re-reading the feeds.
+
+    The item set is the alert HISTORY, pinned to the feed list as it was when it was
+    collected; re-reading rss.md after an edit would silently swap in different feeds.
+    """
+    fixed = 0
+    for it in items:
+        st = it["state"]
+        if it["enriched"] == "rss-only" and "/docket/" in (it["link"] or ""):
+            got = cl_document(it["link"])
+            if got:
+                st.update(got); it["enriched"] = "courtlistener-document-api"; fixed += 1
+        elif it["enriched"].startswith("resolve:") and not st.get("text_excerpt") and it["link"]:
+            txt, how = page_text(it["link"])
+            if txt:
+                st["text_excerpt"] = txt; it["enriched"] = how; fixed += 1
+    log(f"re-enriched {fixed} item(s)")
+    return items
+
+
+def dedupe_documents(items, log=print):
+    """One item per DOCUMENT, as newshound now sends it (cross-feed dedupe).
+
+    The same filing reached through q=usdt, q=ethereum and q=coinbase was judged
+    three times with three different `watch_term`s -- and scored 3.2, 3.1 and 1.5.
+    Keep the richest copy and give it every term that matched.
+    """
+    sys.path.insert(0, str(NH))
+    from newshound import canonical_key
+    rank = {"rss-only": 0}
+    groups = {}
+    for it in items:
+        groups.setdefault(canonical_key(it["id"], it["link"]), []).append(it)
+    out = []
+    for _key, group in groups.items():
+        best = max(group, key=lambda i: (rank.get(i["enriched"], 1), len(json.dumps(i["state"]))))
+        terms = sorted({t.strip() for i in group for t in (i["state"].get("watch_term") or "").split(",") if t.strip()})
+        best = json.loads(json.dumps(best))
+        best["state"]["watch_term"] = ", ".join(terms)
+        best["feeds"] = sorted({i["feed_label"] for i in group})
+        out.append(best)
+    log(f"{len(items)} items -> {len(out)} documents")
+    return out
