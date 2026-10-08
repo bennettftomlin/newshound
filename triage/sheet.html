@@ -1,0 +1,998 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Newshound Scoring Sheet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@6..72,500;6..72,600&family=Public+Sans:wght@400;500;600;700&display=swap">
+<style>
+:root {
+  --paper: #F1F3F2;
+  --sheet: #FFFFFF;
+  --inset: #F6F8F7;
+  --ink: #1A1E21;
+  --ink-2: #47505A;
+  --ink-3: #69727D;
+  --rule: #D9DEDC;
+  --rule-2: #C2C9C6;
+  --accent: #19706A;
+  --accent-soft: #E3F1EF;
+  --link: #1D5F9E;
+  --alert: #B42318;
+  --alert-soft: #FDECEA;
+  --digest: #955A05;
+  --digest-soft: #FBF0DC;
+  --skip: #4F5B69;
+  --skip-soft: #ECEFF2;
+  --r0: #56616E; --r0-soft: #ECEFF2;
+  --r1: #7F7050; --r1-soft: #F3EFE4;
+  --r2: #9A5F06; --r2-soft: #FBF0DC;
+  --r3: #B8430E; --r3-soft: #FCEADF;
+  --r4: #B42318; --r4-soft: #FDECEA;
+  --jev: #2F5BB7;
+  --gemma: #A2378F;
+  --backdrop: rgba(18, 22, 25, .45);
+  --serif: "Newsreader", "Iowan Old Style", Georgia, serif;
+  --sans: "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #101415;
+    --sheet: #181D1F;
+    --inset: #1F2527;
+    --ink: #E6EAEB;
+    --ink-2: #B5BDC1;
+    --ink-3: #8E979C;
+    --rule: #2B3336;
+    --rule-2: #3B4549;
+    --accent: #4CBFB3;
+    --accent-soft: #173331;
+    --link: #82B6EE;
+    --alert: #F7776C;
+    --alert-soft: #3A1D1A;
+    --digest: #EDB256;
+    --digest-soft: #362914;
+    --skip: #A9B4C0;
+    --skip-soft: #252C33;
+    --r0: #A9B4C0; --r0-soft: #252C33;
+    --r1: #C9B98F; --r1-soft: #2E2A1E;
+    --r2: #EDB256; --r2-soft: #362914;
+    --r3: #F7955B; --r3-soft: #3A2416;
+    --r4: #F7776C; --r4-soft: #3A1D1A;
+    --jev: #86A9F2;
+    --gemma: #E58AD3;
+    --backdrop: rgba(0, 0, 0, .6);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #101415;
+  --sheet: #181D1F;
+  --inset: #1F2527;
+  --ink: #E6EAEB;
+  --ink-2: #B5BDC1;
+  --ink-3: #8E979C;
+  --rule: #2B3336;
+  --rule-2: #3B4549;
+  --accent: #4CBFB3;
+  --accent-soft: #173331;
+  --link: #82B6EE;
+  --alert: #F7776C;
+  --alert-soft: #3A1D1A;
+  --digest: #EDB256;
+  --digest-soft: #362914;
+  --skip: #A9B4C0;
+  --skip-soft: #252C33;
+  --r0: #A9B4C0; --r0-soft: #252C33;
+  --r1: #C9B98F; --r1-soft: #2E2A1E;
+  --r2: #EDB256; --r2-soft: #362914;
+  --r3: #F7955B; --r3-soft: #3A2416;
+  --r4: #F7776C; --r4-soft: #3A1D1A;
+  --jev: #86A9F2;
+  --gemma: #E58AD3;
+  --backdrop: rgba(0, 0, 0, .6);
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 400 15px/1.5 var(--sans); }
+button, input, textarea { font: inherit; color: inherit; }
+a { color: var(--link); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
+
+/* header */
+.top { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 28px; padding: 18px 24px 14px; background: var(--sheet); border-bottom: 1px solid var(--rule); }
+.top h1 { margin: 0; font: 600 23px/1.2 var(--serif); letter-spacing: -.005em; }
+.top .sub { margin: 3px 0 0; font-size: 13px; color: var(--ink-3); max-width: 68ch; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; }
+.progress { display: flex; align-items: center; gap: 9px; font-size: 13px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.progress b { color: var(--ink); font-weight: 600; }
+.bar { width: 110px; height: 6px; border-radius: 3px; background: var(--rule); overflow: hidden; }
+.bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s ease; }
+.tabs { display: inline-flex; padding: 2px; gap: 2px; border: 1px solid var(--rule-2); border-radius: 9px; background: var(--inset); }
+.tabs button { border: 0; border-radius: 7px; background: transparent; padding: 5px 14px; font-size: 13px; font-weight: 600; color: var(--ink-2); cursor: pointer; }
+.tabs button[aria-selected="true"] { background: var(--sheet); color: var(--ink); box-shadow: 0 0 0 1px var(--rule-2); }
+.peek { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--ink-2); cursor: pointer; }
+.peek input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+.save { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink-3); }
+.save::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--rule-2); }
+.save[data-state="ok"]::before { background: var(--accent); }
+.save[data-state="warn"]::before { background: var(--digest); }
+.save[data-state="bad"]::before { background: var(--alert); }
+.banner { margin: 14px 24px 0; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--digest); background: var(--digest-soft); font-size: 13.5px; }
+
+/* label view */
+.label-view { display: grid; grid-template-columns: minmax(240px, 290px) minmax(0, 1fr); gap: 22px; align-items: start; max-width: 1200px; margin: 0 auto; padding: 20px 24px 48px; }
+.queue { position: sticky; top: 14px; max-height: calc(100vh - 28px); overflow: auto; background: var(--sheet); border: 1px solid var(--rule); border-radius: 10px; }
+.queue summary { display: none; }
+.queue ol { list-style: none; margin: 0; padding: 6px; }
+.q-item { display: grid; grid-template-columns: 26px minmax(0, 1fr) 12px; gap: 8px; align-items: start; width: 100%; padding: 7px 8px; border: 0; border-radius: 7px; background: transparent; text-align: left; cursor: pointer; }
+.q-item:hover { background: var(--inset); }
+.q-item[aria-current="true"] { background: var(--accent-soft); }
+.q-num { font: 500 12px/1.45 var(--mono); color: var(--ink-3); }
+.q-item[aria-current="true"] .q-num { color: var(--accent); }
+.q-title { font-size: 13px; line-height: 1.38; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.q-chip { width: 10px; height: 10px; margin-top: 4px; border-radius: 50%; border: 1.5px solid var(--rule-2); }
+.q-chip[data-l="r0"] { background: var(--r0); border-color: var(--r0); }
+.q-chip[data-l="r1"] { background: var(--r1); border-color: var(--r1); }
+.q-chip[data-l="r2"] { background: var(--r2); border-color: var(--r2); }
+.q-chip[data-l="r3"] { background: var(--r3); border-color: var(--r3); }
+.q-chip[data-l="r4"] { background: var(--r4); border-color: var(--r4); }
+
+.card { min-width: 0; background: var(--sheet); border: 1px solid var(--rule); border-radius: 12px; padding: 22px 26px 22px; }
+.card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12.5px; color: var(--ink-3); }
+.pos { font: 500 12px var(--mono); color: var(--ink-2); }
+.term { font: 500 11.5px/1 var(--mono); padding: 4px 8px; border-radius: 999px; border: 1px solid var(--rule); background: var(--inset); color: var(--ink-2); }
+.caption { margin: 10px 0 14px; font: 600 25px/1.22 var(--serif); text-wrap: balance; overflow-wrap: anywhere; }
+.meta { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px 20px; margin: 0 0 14px; }
+.meta > div { min-width: 0; }
+.meta .wide { grid-column: 1 / -1; }
+.meta dt { font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); }
+.meta dd { margin: 2px 0 0; font-size: 14px; overflow-wrap: anywhere; }
+.mono { font-family: var(--mono); font-size: 13px; }
+.seen { display: inline-block; margin: 0 0 12px; padding: 4px 10px; border-radius: 6px; font-size: 12.5px; background: var(--inset); color: var(--ink-2); border: 1px solid var(--rule); }
+.seen[data-seen="title"] { background: var(--digest-soft); border-color: var(--digest); color: var(--ink); }
+.eyebrow { margin: 0 0 4px; font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-3); }
+.desc { margin: 0 0 12px; padding: 10px 14px; border-radius: 8px; background: var(--inset); font-size: 14px; overflow-wrap: anywhere; }
+.excerpt { margin: 0 0 14px; }
+.excerpt p { margin: 0; max-height: 10.5em; overflow: auto; padding: 10px 12px; border-radius: 8px; background: var(--inset); font: 12.5px/1.6 var(--mono); color: var(--ink-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.open { font-size: 14px; font-weight: 600; text-decoration: none; }
+.open:hover { text-decoration: underline; }
+
+.decide { display: grid; gap: 12px; margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--rule); }
+.choices { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.choice { position: relative; display: grid; gap: 1px; padding: 10px 12px 11px; border: 1.5px solid var(--rule-2); border-radius: 10px; background: var(--sheet); text-align: left; cursor: pointer; }
+.choice:hover { background: var(--inset); }
+.choice b { font: 600 20px/1.1 var(--mono); }
+.choice span { font-size: 12.5px; color: var(--ink-3); }
+.choice kbd { position: absolute; top: 9px; right: 10px; padding: 0 5px; border: 1px solid var(--rule-2); border-radius: 4px; font: 500 11px/1.5 var(--mono); color: var(--ink-3); }
+.choice[data-l="r0"] b { color: var(--r0); }
+.choice[data-l="r0"][aria-pressed="true"] { border-color: var(--r0); background: var(--r0-soft); }
+.choice[data-l="r1"] b { color: var(--r1); }
+.choice[data-l="r1"][aria-pressed="true"] { border-color: var(--r1); background: var(--r1-soft); }
+.choice[data-l="r2"] b { color: var(--r2); }
+.choice[data-l="r2"][aria-pressed="true"] { border-color: var(--r2); background: var(--r2-soft); }
+.choice[data-l="r3"] b { color: var(--r3); }
+.choice[data-l="r3"][aria-pressed="true"] { border-color: var(--r3); background: var(--r3-soft); }
+.choice[data-l="r4"] b { color: var(--r4); }
+.choice[data-l="r4"][aria-pressed="true"] { border-color: var(--r4); background: var(--r4-soft); }
+.scale { font-size: 13px; color: var(--ink-2); }
+.scale summary { cursor: pointer; font-weight: 600; color: var(--ink-3); font-size: 12.5px; }
+.scale ol { margin: 6px 0 0; padding-left: 0; list-style: none; display: grid; gap: 4px; }
+.scale li b { font-family: var(--mono); margin-right: 6px; }
+.choice:disabled { opacity: .55; cursor: not-allowed; }
+.note { display: grid; gap: 4px; }
+.note textarea { width: 100%; min-height: 44px; padding: 8px 10px; border: 1px solid var(--rule-2); border-radius: 8px; background: var(--sheet); font-size: 14px; resize: vertical; }
+
+.models { margin-top: 16px; padding: 14px 16px; border: 1px solid var(--rule); border-radius: 10px; background: var(--inset); }
+.models.locked { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px; font-size: 13.5px; color: var(--ink-2); }
+.models.locked p { margin: 0; }
+.why { margin: 0 0 10px; font-size: 12.5px; color: var(--ink-3); }
+.why:last-child { margin: 10px 0 0; }
+.ghost { padding: 5px 12px; border: 1px solid var(--rule-2); border-radius: 7px; background: var(--sheet); font-size: 13px; font-weight: 600; cursor: pointer; }
+.ghost:hover { background: var(--inset); }
+.scores { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.scores th, .scores td { padding: 7px 8px; border-top: 1px solid var(--rule); text-align: left; vertical-align: middle; }
+.scores thead th { border-top: 0; padding-top: 0; font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.scores tbody th { font-weight: 600; width: 36%; }
+.scores tbody th small { display: block; font-weight: 400; font-size: 11.5px; line-height: 1.35; color: var(--ink-3); }
+.scores td { width: 32%; }
+th.jev, .key.jev { color: var(--jev); }
+th.gemma, .key.gemma { color: var(--gemma); }
+.meter { display: grid; grid-template-columns: minmax(40px, 1fr) 3.3em; align-items: center; gap: 8px; }
+.track { height: 7px; border-radius: 4px; background: var(--rule); overflow: hidden; }
+.track i { display: block; height: 100%; border-radius: 4px; }
+.meter.jev .track i { background: var(--jev); }
+.meter.gemma .track i { background: var(--gemma); }
+.val { font: 500 12.5px var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.lvl { grid-column: 1 / -1; margin-top: -3px; font-size: 11.5px; color: var(--ink-3); }
+.event { font-size: 13px; }
+.differs { font-weight: 600; }
+
+.nav { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 18px; }
+.nav .grow { flex: 1; }
+.btn { padding: 7px 14px; border: 1px solid var(--rule-2); border-radius: 8px; background: var(--sheet); font-size: 13.5px; font-weight: 600; cursor: pointer; }
+.btn:hover { background: var(--inset); }
+.btn.primary { border-color: var(--accent); background: var(--accent); color: var(--sheet); }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn:disabled { opacity: .45; cursor: default; }
+.keys { margin: 10px 0 0; font-size: 12px; color: var(--ink-3); }
+.keys kbd { padding: 0 4px; border: 1px solid var(--rule-2); border-radius: 4px; font: 500 11px/1.5 var(--mono); }
+
+/* results */
+.results { display: grid; gap: 18px; max-width: 1000px; margin: 0 auto; padding: 20px 24px 48px; }
+.res-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 10px 20px; }
+.res-head h2 { margin: 0; font: 600 22px/1.25 var(--serif); }
+.res-head p { margin: 4px 0 0; font-size: 14px; color: var(--ink-2); }
+.panel { min-width: 0; padding: 18px 20px 20px; border: 1px solid var(--rule); border-radius: 12px; background: var(--sheet); }
+.panel h3 { margin: 0 0 4px; font: 600 18px/1.3 var(--serif); text-wrap: balance; }
+.panel .lede { margin: 0 0 14px; max-width: 72ch; font-size: 13.5px; color: var(--ink-2); }
+.chart { overflow-x: auto; }
+.chart svg { display: block; width: 100%; min-width: 560px; height: auto; }
+.chart text { fill: var(--ink-3); font: 12px var(--sans); }
+.chart text.row { fill: var(--ink); font-size: 13px; font-weight: 600; }
+.chart text.tick { fill: var(--ink-2); font-family: var(--mono); }
+.chart .grid { stroke: var(--rule); stroke-width: 1; }
+.chart .sep { stroke: var(--rule); stroke-width: 1; }
+.chart .thr { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.chart .mk { cursor: pointer; fill-opacity: .8; stroke: var(--sheet); stroke-width: 1; }
+.chart .mk:hover { fill-opacity: 1; }
+.chart .mk.jev { fill: var(--jev); }
+.chart .mk.gemma { fill: var(--gemma); }
+.chart .mean { stroke-width: 3; stroke-linecap: round; }
+.chart .mean.jev { stroke: var(--jev); }
+.chart .mean.gemma { stroke: var(--gemma); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; font-size: 12.5px; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 10px; height: 10px; display: inline-block; }
+.sw.jev { border-radius: 50%; background: var(--jev); }
+.sw.gemma { background: var(--gemma); }
+.sw.thr { width: 16px; height: 0; border-top: 2px dashed var(--accent); }
+.thr-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin: 0 0 14px; font-size: 14px; }
+.thr-row input { width: min(320px, 100%); accent-color: var(--accent); }
+.thr-row output { font: 600 14px var(--mono); min-width: 3.2em; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+.stat { padding: 12px 14px; border: 1px solid var(--rule); border-radius: 10px; }
+.stat h4 { margin: 0 0 8px; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.stat dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; align-items: baseline; }
+.stat dt { font: 600 18px var(--sans); font-variant-numeric: tabular-nums; text-align: right; }
+.stat dd { margin: 0; font-size: 13.5px; color: var(--ink-2); }
+.tbl-wrap { overflow-x: auto; }
+.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.tbl th, .tbl td { padding: 7px 8px; border-top: 1px solid var(--rule); text-align: left; vertical-align: top; }
+.tbl thead th { border-top: 0; font-size: 11.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); }
+.tbl td.n, .tbl th.n { text-align: right; font-family: var(--mono); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tbl tr.go { cursor: pointer; }
+.tbl tr.go:hover td { background: var(--inset); }
+.tbl .t { min-width: 16em; }
+.tbl .nt { color: var(--ink-2); font-size: 13px; min-width: 10em; }
+.pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 700; white-space: nowrap; }
+.pill[data-l="r0"] { background: var(--r0-soft); color: var(--r0); }
+.pill[data-l="r1"] { background: var(--r1-soft); color: var(--r1); }
+.pill[data-l="r2"] { background: var(--r2-soft); color: var(--r2); }
+.pill[data-l="r3"] { background: var(--r3-soft); color: var(--r3); }
+.pill[data-l="r4"] { background: var(--r4-soft); color: var(--r4); }
+.chart .you { fill: none; stroke: var(--ink-2); stroke-width: 1.5; stroke-dasharray: 2 3; }
+.sw.you { width: 14px; height: 0; border-top: 2px dotted var(--ink-2); }
+.misses { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+.misses h4 { margin: 0 0 6px; font-size: 13.5px; }
+.misses ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.miss { display: grid; gap: 3px; width: 100%; padding: 8px 10px; border: 1px solid var(--rule); border-radius: 8px; background: var(--sheet); text-align: left; cursor: pointer; }
+.miss:hover { background: var(--inset); }
+.miss .t { font-size: 13.5px; overflow-wrap: anywhere; }
+.miss .s { font: 500 12px var(--mono); color: var(--ink-3); }
+.miss .s b { font-weight: 600; }
+.miss .s b.jev { color: var(--jev); }
+.miss .s b.gemma { color: var(--gemma); }
+.empty { margin: 0; font-size: 13.5px; color: var(--ink-3); }
+.foot { margin: 0; max-width: 78ch; font-size: 12.5px; color: var(--ink-3); }
+
+dialog { width: min(640px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--rule-2); border-radius: 12px; background: var(--sheet); color: var(--ink); }
+dialog::backdrop { background: var(--backdrop); }
+.dlg { display: grid; gap: 10px; padding: 18px 20px; }
+.dlg h2 { margin: 0; font: 600 19px var(--serif); }
+.dlg p { margin: 0; font-size: 13.5px; color: var(--ink-2); }
+.dlg textarea { width: 100%; padding: 10px; border: 1px solid var(--rule-2); border-radius: 8px; background: var(--inset); font: 12px/1.5 var(--mono); resize: vertical; }
+.dlg .row { display: flex; justify-content: flex-end; gap: 8px; }
+
+@media (max-width: 900px) {
+  .top { padding: 14px 16px 12px; }
+  .banner { margin: 12px 16px 0; }
+  .label-view { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 14px 16px 36px; }
+  .queue { position: static; max-height: none; }
+  .queue summary { display: block; padding: 10px 14px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .queue ol { max-height: 48vh; overflow: auto; border-top: 1px solid var(--rule); }
+  .card { padding: 16px 16px 18px; }
+  .caption { font-size: 21px; }
+  .keys { display: none; }
+  .results { padding: 14px 16px 36px; }
+  .panel { padding: 16px; }
+}
+@media (max-width: 520px) {
+  .choice span { display: none; }
+  .choice kbd { display: none; }
+  .choices { gap: 8px; }
+  .scores tbody th small { display: none; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div>
+    <h1>Newshound scoring sheet</h1>
+    <p class="sub" id="sub"></p>
+  </div>
+  <div class="controls">
+    <div class="progress"><span><b id="done">0</b> of <span id="total">0</span> rated</span><span class="bar" aria-hidden="true"><i id="bar"></i></span></div>
+    <label class="peek"><input type="checkbox" id="peek"> Show scores before I rate</label>
+    <div class="tabs" role="tablist" aria-label="View">
+      <button type="button" role="tab" id="tab-label" aria-selected="true" aria-controls="view-label">Label</button>
+      <button type="button" role="tab" id="tab-results" aria-selected="false" aria-controls="view-results">Results</button>
+    </div>
+    <span class="save" id="save" role="status" data-state="wait">Connecting to the label store…</span>
+  </div>
+</header>
+<div class="banner" id="banner" role="alert" hidden></div>
+
+<main>
+  <section class="label-view" id="view-label" role="tabpanel" aria-labelledby="tab-label">
+    <details class="queue" id="queue">
+      <summary>All documents · <span id="queue-count"></span></summary>
+      <ol id="queue-list"></ol>
+    </details>
+    <article class="card" id="card" aria-live="polite"></article>
+  </section>
+  <section class="results" id="view-results" role="tabpanel" aria-labelledby="tab-results" hidden></section>
+</main>
+
+<dialog id="export">
+  <form method="dialog" class="dlg">
+    <h2>Export labels</h2>
+    <p>Your 0–4 ratings and notes, with both models' interest scores, as JSON.</p>
+    <textarea id="export-text" rows="12" readonly></textarea>
+    <div class="row">
+      <button type="button" class="btn" id="copy">Copy</button>
+      <button class="btn primary" value="close">Done</button>
+    </div>
+  </form>
+</dialog>
+
+<script type="application/json" id="sheet-data">/*__DATA__*/{}</script>
+<script>
+(() => {
+  'use strict';
+  const DATA = JSON.parse(document.getElementById('sheet-data').textContent);
+  const META = DATA.meta || {};
+  const ITEMS = DATA.items || [];
+  const INDEX = new Map(ITEMS.map((it, i) => [it.key, i]));
+  const RATINGS = [0, 1, 2, 3, 4];
+  // The interest rubric exactly as the models were given it (carried in by sheet.py).
+  const SCALE = (META.scale && META.scale.length === 5) ? META.scale : null;
+  const LEVELS = ['not at all', 'barely', 'somewhat', 'clearly', 'must know'];
+  const MODELS = [
+    { id: 'jev', name: 'Jev', mark: 'circles' },
+    { id: 'gemma', name: 'gemma4', mark: 'squares' },
+  ];
+  const WHY = {
+    disagree: 'In the sample because Jev and gemma4 gave it very different interest scores.',
+    top: 'In the sample because one of the models scored it among the most interesting in the run.',
+    ai: 'In the sample as a random pick from the AI-company searches.',
+    procedural: "In the sample as a random pick from filings the court's own event name marks as procedural.",
+    random: 'In the sample as a random pick from the whole run.',
+  };
+  const SEEN = {
+    text: 'Models saw the filing text',
+    docket: 'Models saw docket details only, no filing text',
+    title: 'Models saw the headline only',
+  };
+  const EVENTS = {
+    new_case: 'New case', charges: 'Charges', ruling: 'Ruling', settlement_or_plea: 'Settlement or plea',
+    sentencing: 'Sentencing', enforcement_action: 'Enforcement action', regulatory_statement: 'Regulatory statement',
+    new_disclosure: 'New disclosure', procedural: 'Procedural', unrelated: 'Unrelated',
+  };
+
+  const $ = (id) => document.getElementById(id);
+  const pref = {
+    get(k, d) { try { const v = localStorage.getItem('newshound-sheet:' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+    set(k, v) { try { localStorage.setItem('newshound-sheet:' + k, JSON.stringify(v)); } catch (e) { /* per-viewer convenience only */ } },
+  };
+  const S = {
+    view: 'label',
+    idx: Math.min(Math.max(0, Number(pref.get('idx', 0)) | 0), Math.max(0, ITEMS.length - 1)),
+    labels: {}, server: {}, shown: new Set(),
+    peek: !!pref.get('peek', false),
+    threshold: clampT(Number(pref.get('threshold', 2.5))),
+    db: null, mode: 'connecting', error: '', saving: 0,
+  };
+  function clampT(t) { return Number.isFinite(t) ? Math.min(4, Math.max(0, t)) : 2.5; }
+
+  function h(tag, attrs, ...kids) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (v == null || v === false) continue;
+      if (k === 'class') el.className = v;
+      else if (k === 'text') el.textContent = v;
+      else if (k === 'style') Object.assign(el.style, v);
+      else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+      else el.setAttribute(k, v === true ? '' : String(v));
+    }
+    for (const kid of kids.flat(Infinity)) if (kid != null && kid !== false) el.append(kid);
+    return el;
+  }
+  function sv(tag, attrs, ...kids) {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    for (const [k, v] of Object.entries(attrs || {})) if (v != null) el.setAttribute(k, String(v));
+    for (const kid of kids.flat(Infinity)) if (kid != null) el.append(kid);
+    return el;
+  }
+  const callOf = (key) => { const L = S.labels[key]; return L && Number.isInteger(L.label) ? L.label : null; };
+  const rated = (key) => callOf(key) !== null;
+  const avg = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  const safeHref = (u) => (/^https?:\/\//i.test(u || '') ? u : null);
+
+  /* ---------- label store ---------- */
+  function bodyFor(key, L) {
+    if (!L || (L.label == null && !L.note)) return null;
+    const it = ITEMS[INDEX.get(key)];
+    return { key, title: it.title, label: L.label ?? null, note: L.note || '', labeled_at: L.labeled_at || null, run: META.run || null };
+  }
+  const busy = new Set(), queued = new Map(), sent = new Map();
+  function persist(key) {
+    const body = bodyFor(key, S.labels[key]);
+    const sig = JSON.stringify(body);
+    if (sent.get(key) === sig) return;
+    if (!S.db) return;
+    sent.set(key, sig);
+    queued.set(key, body);
+    pump(key);
+  }
+  async function pump(key) {
+    if (busy.has(key) || !queued.has(key)) return;
+    const body = queued.get(key);
+    queued.delete(key);
+    busy.add(key); S.saving++; renderStatus();
+    try {
+      await send(key, body, false);
+    } catch (e) {
+      sent.delete(key);
+      queued.delete(key);
+      if (S.server[key]) S.labels[key] = S.server[key]; else delete S.labels[key];
+      failed(e);
+    } finally {
+      busy.delete(key); S.saving--;
+      renderAll();
+      pump(key);
+    }
+  }
+  async function send(key, body, retried) {
+    const ref = S.db.collection('labels').doc(key);
+    try {
+      if (body) await ref.set(body); else await ref.delete();
+    } catch (e) {
+      if (e && e.code === 'unavailable' && !retried) {
+        await new Promise((r) => setTimeout(r, 300 + Math.random() * 900));
+        return send(key, body, true);
+      }
+      throw e;
+    }
+  }
+  function failed(e) {
+    const code = e && e.code;
+    if (code === 'invalid_argument' || code === 'transform_error') S.mode = 'readonly';
+    else if (code === 'quota_exceeded') { S.mode = 'error'; S.error = "The page's label store is full, so that change wasn't saved. Export your labels from the Results tab."; }
+    else if (['revoked', 'not_granted', 'capability_disabled', 'capability_removed'].includes(code)) { S.mode = 'off'; S.db = null; }
+    else { S.mode = 'error'; S.error = "That change didn't save and has been undone on screen. Try it again in a moment."; }
+  }
+  let noteKey = null, noteTimer = 0;
+  function adopt(snap) {
+    const server = {};
+    for (const d of snap.docs) {
+      if (!INDEX.has(d.id)) continue;
+      const v = d.data() || {};
+      const label = RATINGS.includes(v.label) ? v.label : null;
+      const note = typeof v.note === 'string' ? v.note.slice(0, 2000) : '';
+      if (label === null && !note) continue;
+      server[d.id] = { label, note, labeled_at: typeof v.labeled_at === 'string' ? v.labeled_at : null };
+    }
+    S.server = server;
+    const local = new Set([...busy, ...queued.keys()]);
+    if (noteKey) local.add(noteKey);
+    const next = { ...server };
+    for (const k of local) { if (S.labels[k]) next[k] = S.labels[k]; else delete next[k]; }
+    for (const it of ITEMS) if (!local.has(it.key)) sent.set(it.key, JSON.stringify(bodyFor(it.key, server[it.key])));
+    S.labels = next;
+    if (S.mode === 'connecting') S.mode = 'live';
+    renderAll();
+  }
+  function subscribe(db, attempt) {
+    try {
+      db.collection('labels').onSnapshot(adopt, (err) => {
+        if (err && err.code === 'unavailable' && attempt < 2) { setTimeout(() => subscribe(db, attempt + 1), 1500); return; }
+        S.mode = 'off'; S.db = null; renderAll();
+      });
+    } catch (e) { S.mode = 'off'; S.db = null; renderAll(); }
+  }
+  async function connect() {
+    let db = null;
+    try {
+      const c = window.claude;
+      db = c && typeof c.use === 'function' ? await c.use('db') : null;
+    } catch (e) { db = null; }
+    if (!db) { S.mode = 'off'; renderAll(); return; }
+    S.db = db;
+    subscribe(db, 0);
+  }
+
+  /* ---------- actions ---------- */
+  function setLabel(call) {
+    if (S.mode === 'readonly' || !ITEMS.length) return;
+    const key = ITEMS[S.idx].key;
+    const cur = S.labels[key] || { label: null, note: '', labeled_at: null };
+    const label = cur.label === call ? null : call;
+    const next = { ...cur, label, labeled_at: label === null ? null : new Date().toISOString() };
+    if (next.label == null && !next.note) delete S.labels[key]; else S.labels[key] = next;
+    if (S.mode === 'error') S.mode = S.db ? 'live' : 'off';
+    persist(key);
+    renderAll();
+  }
+  function flushNote() {
+    if (!noteTimer) return;
+    clearTimeout(noteTimer); noteTimer = 0;
+    if (noteKey) persist(noteKey);
+  }
+  function go(i, fromList) {
+    if (i < 0 || i >= ITEMS.length) return;
+    flushNote(); noteKey = null;
+    S.idx = i; pref.set('idx', i);
+    if (S.view !== 'label') setView('label');
+    renderAll();
+    const cur = document.querySelector('.q-item[aria-current="true"]');
+    if (cur) cur.scrollIntoView({ block: 'nearest' });
+    if (fromList && window.matchMedia('(max-width: 900px)').matches) $('card').scrollIntoView({ block: 'start' });
+  }
+  function nextUnlabelled() {
+    for (let k = 1; k <= ITEMS.length; k++) {
+      const i = (S.idx + k) % ITEMS.length;
+      if (!rated(ITEMS[i].key)) return go(i);
+    }
+    setView('results');
+  }
+  function setView(v) {
+    flushNote();
+    S.view = v;
+    $('tab-label').setAttribute('aria-selected', String(v === 'label'));
+    $('tab-results').setAttribute('aria-selected', String(v === 'results'));
+    $('view-label').hidden = v !== 'label';
+    $('view-results').hidden = v !== 'results';
+    renderAll();
+    window.scrollTo(0, 0);
+  }
+
+  /* ---------- label view ---------- */
+  function renderStatus() {
+    const el = $('save');
+    let text = 'Labels saved', state = 'ok';
+    if (S.mode === 'connecting') { text = 'Connecting to the label store…'; state = 'wait'; }
+    else if (S.mode === 'off') { text = 'Not saving in this view'; state = 'warn'; }
+    else if (S.mode === 'readonly') { text = 'View only'; state = 'warn'; }
+    else if (S.mode === 'error') { text = "Last change didn't save"; state = 'bad'; }
+    else if (S.saving > 0) { text = 'Saving…'; state = 'wait'; }
+    el.textContent = text; el.dataset.state = state;
+    let msg = '';
+    if (S.mode === 'off') msg = "Labels can't be saved in this view, so they'll be gone when you close it. Use Export labels on the Results tab to keep them.";
+    else if (S.mode === 'readonly') msg = 'You can read the scores here, but your access to this page doesn’t allow changing labels.';
+    else if (S.mode === 'error') msg = S.error;
+    const b = $('banner');
+    b.hidden = !msg; b.textContent = msg;
+  }
+  function renderProgress() {
+    const done = ITEMS.filter((it) => rated(it.key)).length;
+    $('done').textContent = String(done);
+    $('total').textContent = String(ITEMS.length);
+    $('bar').style.width = (ITEMS.length ? (done / ITEMS.length) * 100 : 0).toFixed(1) + '%';
+    $('queue-count').textContent = `${done} of ${ITEMS.length} rated`;
+  }
+  let qButtons = null;
+  function renderQueue() {
+    if (!qButtons) {
+      qButtons = ITEMS.map((it, i) => h('button', { type: 'button', class: 'q-item', onclick: () => go(i, true) },
+        h('span', { class: 'q-num', text: String(i + 1).padStart(2, '0') }),
+        h('span', { class: 'q-title', text: it.title }),
+        h('span', { class: 'q-chip', 'aria-hidden': 'true' })));
+      $('queue-list').replaceChildren(...qButtons.map((b) => h('li', null, b)));
+    }
+    ITEMS.forEach((it, i) => {
+      const b = qButtons[i], call = callOf(it.key);
+      if (i === S.idx) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current');
+      b.setAttribute('aria-label', `${i + 1}. ${it.title}, ${call === null ? 'not rated' : 'rated ' + call + ', ' + LEVELS[call]}`);
+      b.lastChild.dataset.l = call === null ? '' : 'r' + call;
+    });
+  }
+  function linkText(url) {
+    try {
+      const u = new URL(url);
+      if (u.hostname.endsWith('courtlistener.com')) return u.pathname === '/' ? 'Search CourtListener for this caption ↗' : 'Open on CourtListener ↗';
+      return 'Open on ' + u.hostname.replace(/^www\./, '') + ' ↗';
+    } catch (e) { return 'Open the source ↗'; }
+  }
+
+  let built = -1;
+  const refs = {};
+  function buildCard() {
+    const card = $('card');
+    if (!ITEMS.length) { card.replaceChildren(h('p', { class: 'empty', text: 'This sheet has no documents.' })); built = -2; return; }
+    const it = ITEMS[S.idx];
+    built = S.idx;
+    const meta = [];
+    const add = (label, value, cls) => {
+      if (value == null || value === '') return;
+      meta.push(h('div', { class: cls === 'wide' ? 'wide' : null }, h('dt', { text: label }), h('dd', { class: cls === 'mono' ? 'mono' : null, text: String(value) })));
+    };
+    add('Court', it.court);
+    add('Docket', it.docket, 'mono');
+    add('Case filed', it.filed, 'mono');
+    add('Entry', [it.entry_date, it.doc != null ? 'doc ' + it.doc : null].filter(Boolean).join(' · '), 'mono');
+    add('Court event', it.event, 'wide');
+    add('Nature of suit', it.nature, 'wide');
+    add('Cause', it.cause, 'wide');
+    refs.choices = RATINGS.map((n) => h('button', {
+      type: 'button', class: 'choice', 'data-l': 'r' + n, 'data-n': String(n), 'aria-pressed': 'false',
+      'aria-label': `${n}, ${LEVELS[n]}`, title: SCALE ? SCALE[n] : LEVELS[n], onclick: () => setLabel(n),
+    }, h('b', { text: String(n) }), h('span', { text: LEVELS[n] }), h('kbd', { text: String(n) })));
+    refs.note = h('textarea', { id: 'note', rows: '2', maxlength: '2000', placeholder: 'What decided it: a new party, already covered, a routine exhibit…' });
+    refs.note.addEventListener('focus', () => { noteKey = it.key; });
+    refs.note.addEventListener('input', () => {
+      const cur = S.labels[it.key] || { label: null, note: '', labeled_at: null };
+      const next = { ...cur, note: refs.note.value.slice(0, 2000) };
+      if (next.label == null && !next.note) delete S.labels[it.key]; else S.labels[it.key] = next;
+      clearTimeout(noteTimer);
+      noteTimer = setTimeout(() => { noteTimer = 0; persist(it.key); }, 800);
+    });
+    refs.note.addEventListener('blur', () => { flushNote(); noteKey = null; });
+    refs.models = h('div', { class: 'models' });
+    refs.pos = h('span', { class: 'pos' });
+    const href = safeHref(it.link);
+    card.replaceChildren(
+      h('div', { class: 'card-head' }, refs.pos, h('span', { text: it.source }), ...it.terms.map((t) => h('span', { class: 'term', text: t }))),
+      h('h2', { class: 'caption', text: it.title }),
+      meta.length ? h('dl', { class: 'meta' }, meta) : null,
+      h('p', { class: 'seen', 'data-seen': it.seen, text: SEEN[it.seen] || '' }),
+      it.description ? h('div', null, h('p', { class: 'eyebrow', text: it.court ? 'Docket entry' : 'Summary' }), h('p', { class: 'desc', text: it.description })) : null,
+      it.excerpt ? h('div', { class: 'excerpt' }, h('p', { class: 'eyebrow', text: 'Start of the filing text the models saw' }), h('p', { text: it.excerpt })) : null,
+      href ? h('a', { class: 'open', href, target: '_blank', rel: 'noopener noreferrer', text: linkText(href) }) : null,
+      h('div', { class: 'decide' },
+        h('div', { class: 'choices', role: 'group', 'aria-label': 'How newsworthy is this, 0 to 4' }, refs.choices),
+        SCALE ? h('details', { class: 'scale' }, h('summary', { text: 'The scale, worded exactly as the models saw it' }),
+          h('ol', null, SCALE.map((c, n) => h('li', null, h('b', { text: String(n) }), c)))) : null,
+        h('label', { class: 'note', for: 'note' }, h('span', { class: 'eyebrow', text: 'Note (optional)' }), refs.note)),
+      refs.models,
+      h('div', { class: 'nav' },
+        h('button', { type: 'button', class: 'btn', onclick: () => go(S.idx - 1), disabled: S.idx === 0, text: '← Previous' }),
+        h('button', { type: 'button', class: 'btn', onclick: () => go(S.idx + 1), disabled: S.idx === ITEMS.length - 1, text: 'Next →' }),
+        h('span', { class: 'grow' }),
+        h('button', { type: 'button', class: 'btn primary', onclick: nextUnlabelled, text: 'Next unlabelled' })),
+      h('p', { class: 'keys' }, 'Keys: ', h('kbd', { text: '0' }), '–', h('kbd', { text: '4' }), ' to rate (again to clear) · ',
+        h('kbd', { text: '←' }), ' ', h('kbd', { text: '→' }), ' to move · ', h('kbd', { text: 'U' }), ' next unlabelled · ', h('kbd', { text: 'N' }), ' note'),
+    );
+  }
+  function meterCell(model, value, kind) {
+    const pct = kind === 'interest' ? (value / 4) * 100 : value * 100;
+    return h('div', { class: 'meter ' + model },
+      h('span', { class: 'track', 'aria-hidden': 'true' }, h('i', { style: { width: Math.max(0, Math.min(100, pct)).toFixed(1) + '%' } })),
+      h('span', { class: 'val', text: kind === 'interest' ? value.toFixed(2) : Math.round(value * 100) + '%' }),
+      kind === 'interest' ? h('span', { class: 'lvl', text: LEVELS[Math.max(0, Math.min(4, Math.round(value)))] }) : null);
+  }
+  function renderModels() {
+    const box = refs.models, it = ITEMS[S.idx];
+    const open = S.peek || rated(it.key) || S.shown.has(it.key);
+    box.className = open ? 'models' : 'models locked';
+    if (!open) {
+      box.replaceChildren(
+        h('p', { text: 'The models’ scores stay hidden until you rate it, so they can’t steer you.' }),
+        h('button', { type: 'button', class: 'ghost', text: 'Show them anyway', onclick: () => { S.shown.add(it.key); renderModels(); } }));
+      return;
+    }
+    const events = MODELS.map((m) => it[m.id].event);
+    const rows = [
+      ['Interest', 'How much a reader of the beat would want to know, 0–4', (m) => meterCell(m.id, it[m.id].interest, 'interest')],
+      ['Substantive', 'More than a routine procedural step', (m) => meterCell(m.id, it[m.id].substantive, 'p')],
+      ['Watch term is a party', 'The searched name is a party, not a passing mention', (m) => meterCell(m.id, it[m.id].party, 'p')],
+      ['Event', 'What kind of development it is', (m) => h('span', { class: 'event' + (events[0] !== events[1] ? ' differs' : ''), text: EVENTS[it[m.id].event] || it[m.id].event })],
+      ['Buried detail', 'The text holds a newsworthy fact the caption hides', (m) => meterCell(m.id, it[m.id].buried, 'p')],
+    ];
+    box.replaceChildren(
+      h('p', { class: 'why', text: WHY[it.stratum] || '' }),
+      h('div', { class: 'tbl-wrap' }, h('table', { class: 'scores' },
+        h('thead', null, h('tr', null, h('th', { scope: 'col' }, h('span', { class: 'sr', text: 'Question' })), MODELS.map((m) => h('th', { scope: 'col', class: m.id, text: m.name })))),
+        h('tbody', null, rows.map(([name, help, cell]) => h('tr', null,
+          h('th', { scope: 'row' }, name, h('small', { text: help })),
+          MODELS.map((m) => h('td', null, cell(m)))))))),
+      it.seen === 'title' ? h('p', { class: 'why', text: 'Both models saw only the headline for this one, so treat their scores as guesses.' }) : null,
+    );
+  }
+  function updateCard() {
+    if (!ITEMS.length) return;
+    const it = ITEMS[S.idx], call = callOf(it.key), ro = S.mode === 'readonly';
+    refs.pos.textContent = `${String(S.idx + 1).padStart(2, '0')} of ${ITEMS.length}`;
+    for (const b of refs.choices) { b.setAttribute('aria-pressed', String(Number(b.dataset.n) === call)); b.disabled = ro; }
+    if (document.activeElement !== refs.note) refs.note.value = (S.labels[it.key] && S.labels[it.key].note) || '';
+    refs.note.disabled = ro;
+    renderModels();
+  }
+
+  /* ---------- results ---------- */
+  function auc(pos, neg) {
+    if (!pos.length || !neg.length) return null;
+    let s = 0;
+    for (const p of pos) for (const n of neg) s += p > n ? 1 : p === n ? 0.5 : 0;
+    return s / (pos.length * neg.length);
+  }
+  function grouped() {
+    const by = { 0: [], 1: [], 2: [], 3: [], 4: [] };
+    for (const it of ITEMS) { const c = callOf(it.key); if (c !== null) by[c].push(it); }
+    return by;
+  }
+  function panel(title, lede, ...body) {
+    return h('section', { class: 'panel' }, h('h3', { text: title }), lede ? h('p', { class: 'lede', text: lede }) : null, body);
+  }
+  function hashOf(key) { let x = 0; for (const ch of key) x = (x * 31 + ch.charCodeAt(0)) >>> 0; return x; }
+  function ranks(xs) {
+    const idx = xs.map((v, i) => [v, i]).sort((p, q) => p[0] - q[0]), r = new Array(xs.length);
+    for (let i = 0; i < idx.length;) {
+      let j = i; while (j + 1 < idx.length && idx[j + 1][0] === idx[i][0]) j++;
+      for (let k = i; k <= j; k++) r[idx[k][1]] = (i + j) / 2 + 1;
+      i = j + 1;
+    }
+    return r;
+  }
+  function pearson(xs, ys) {
+    const n = xs.length; if (n < 3) return null;
+    const mx = avg(xs), my = avg(ys);
+    let sxy = 0, sxx = 0, syy = 0;
+    for (let i = 0; i < n; i++) { sxy += (xs[i] - mx) * (ys[i] - my); sxx += (xs[i] - mx) ** 2; syy += (ys[i] - my) ** 2; }
+    return sxx && syy ? sxy / Math.sqrt(sxx * syy) : null;
+  }
+  const spearman = (xs, ys) => pearson(ranks(xs), ranks(ys));
+  function auc(pos, neg) {
+    if (!pos.length || !neg.length) return null;
+    let s = 0;
+    for (const p of pos) for (const n of neg) s += p > n ? 1 : p === n ? 0.5 : 0;
+    return s / (pos.length * neg.length);
+  }
+  function strip(by) {
+    const W = 700, L = 150, R = 26, T = 12, RH = 52, B = 44, rows = [4, 3, 2, 1, 0];
+    const H = T + RH * rows.length + B, X = (v) => L + (v / 4) * (W - L - R), bottom = T + RH * rows.length;
+    const svg = sv('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Each model’s interest score for every document, grouped by your 0–4 rating' });
+    for (let v = 0; v <= 4; v++) {
+      svg.append(sv('line', { x1: X(v), x2: X(v), y1: T, y2: bottom, class: 'grid' }));
+      svg.append(sv('text', { x: X(v), y: bottom + 17, 'text-anchor': 'middle', class: 'tick' }, String(v)));
+      svg.append(sv('text', { x: X(v), y: bottom + 33, 'text-anchor': v === 0 ? 'start' : v === 4 ? 'end' : 'middle', dx: v === 0 ? -6 : v === 4 ? 6 : 0 }, LEVELS[v]));
+    }
+    rows.forEach((c, r) => {
+      const y0 = T + RH * r, cy = y0 + RH / 2;
+      if (r) svg.append(sv('line', { x1: 8, x2: W - R, y1: y0, y2: y0, class: 'sep' }));
+      svg.append(sv('text', { x: L - 16, y: cy + 4, 'text-anchor': 'end', class: 'row' }, `You: ${c} · ${LEVELS[c]} (${by[c].length})`));
+      svg.append(sv('line', { x1: X(c), x2: X(c), y1: y0 + 4, y2: y0 + RH - 4, class: 'you' }));
+      MODELS.forEach((m, mi) => {
+        const yy = cy + (mi ? 10 : -10);
+        for (const it of by[c]) {
+          const v = it[m.id].interest, x = X(v), j = ((hashOf(it.key) % 7) - 3) * 1.1;
+          const tip = sv('title', null, `${it.title} · ${m.name} ${v.toFixed(2)} · you ${c}`);
+          const mk = mi
+            ? sv('rect', { x: x - 4.2, y: yy + j - 4.2, width: 8.4, height: 8.4, class: 'mk ' + m.id }, tip)
+            : sv('circle', { cx: x, cy: yy + j, r: 4.6, class: 'mk ' + m.id }, tip);
+          mk.addEventListener('click', () => go(INDEX.get(it.key)));
+          svg.append(mk);
+        }
+        if (by[c].length) {
+          const mean = avg(by[c].map((it) => it[m.id].interest));
+          svg.append(sv('line', { x1: X(mean), x2: X(mean), y1: yy - 9, y2: yy + 9, class: 'mean ' + m.id }, sv('title', null, `${m.name} average where you said ${c}: ${mean.toFixed(2)}`)));
+        }
+      });
+    });
+    svg.append(sv('line', { x1: X(S.threshold), x2: X(S.threshold), y1: T - 6, y2: bottom, class: 'thr' }));
+    return svg;
+  }
+  function thresholdStats(by) {
+    const t = S.threshold, hi = [...by[3], ...by[4]], lo = [...by[0], ...by[1]];
+    return h('div', { class: 'stats' }, MODELS.map((m) => {
+      const over = (xs) => xs.filter((it) => it[m.id].interest >= t).length;
+      const total = ITEMS.filter((it) => it[m.id].interest >= t).length;
+      return h('div', { class: 'stat' },
+        h('h4', { class: 'key ' + m.id, text: m.name }),
+        h('dl', null,
+          h('dt', { text: `${over(hi)}/${hi.length}` }), h('dd', { text: 'of the documents you rated 3–4 would have pinged' }),
+          h('dt', { text: `${over(by[2])}/${by[2].length}` }), h('dd', { text: 'of your 2s would have pinged' }),
+          h('dt', { text: `${over(lo)}/${lo.length}` }), h('dd', { text: 'of the documents you rated 0–1 would have pinged' }),
+          h('dt', { text: `${total}/${ITEMS.length}` }), h('dd', { text: 'of all documents on this sheet clear the line' })));
+    }));
+  }
+  function missList(title, items, test, empty) {
+    const rows = items.filter((it) => MODELS.some((m) => test(it[m.id].interest)));
+    return h('div', null, h('h4', { text: `${title} (${rows.length})` }),
+      rows.length ? h('ul', null, rows.map((it) => h('li', null, h('button', { type: 'button', class: 'miss', onclick: () => go(INDEX.get(it.key)) },
+        h('span', { class: 't', text: it.title }),
+        h('span', { class: 's' }, `you ${callOf(it.key)} · `, MODELS.map((m, i) => [i ? ' · ' : '', test(it[m.id].interest) ? h('b', { class: m.id, text: `${m.name} ${it[m.id].interest.toFixed(2)}` }) : `${m.name} ${it[m.id].interest.toFixed(2)}`])))))) : h('p', { class: 'empty', text: empty }));
+  }
+  const res = {};
+  function renderThresholdParts() {
+    const by = grouped(), t = S.threshold;
+    res.chart.replaceChildren(strip(by));
+    res.stats.replaceChildren(thresholdStats(by));
+    res.out.textContent = t.toFixed(2);
+    res.misses.replaceChildren(
+      missList('You rated 3–4, a model scored it below the line', [...by[4], ...by[3]], (v) => v < t, 'Neither model would have held back anything you rated 3 or 4 at this line.'),
+      missList('You rated 0–1, a model scored it at or above the line', [...by[1], ...by[0]], (v) => v >= t, 'Neither model would have pinged anything you rated 0 or 1 at this line.'));
+  }
+  function renderResults() {
+    const root = $('view-results');
+    const by = grouped();
+    const done = RATINGS.reduce((n, r) => n + by[r].length, 0);
+    const head = h('div', { class: 'res-head' },
+      h('div', null, h('h2', { text: 'How the models’ scores compare with yours' }),
+        h('p', { text: done ? `${done} of ${ITEMS.length} rated · ` + RATINGS.map((r) => `${r}: ${by[r].length}`).join(' · ') : 'Nothing rated yet. Rate a few documents on the Label tab and the comparison fills in here.' })),
+      h('button', { type: 'button', class: 'btn', onclick: openExport, text: 'Export ratings' }));
+    if (!done) { root.replaceChildren(head); return; }
+
+    res.chart = h('div', { class: 'chart' });
+    res.stats = h('div');
+    res.misses = h('div', { class: 'misses' });
+    res.out = h('output', { for: 'thr' });
+    const slider = h('input', { type: 'range', id: 'thr', min: '0', max: '4', step: '0.25', value: String(S.threshold), 'aria-label': 'Interest score that sends an alert' });
+    slider.addEventListener('input', () => { S.threshold = clampT(Number(slider.value)); pref.set('threshold', S.threshold); renderThresholdParts(); });
+
+    const mine = ITEMS.filter((it) => rated(it.key));
+    const you = mine.map((it) => callOf(it.key));
+    const fmt = (x, d = 2) => (x == null ? '—' : x.toFixed(d));
+    const agree = h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' },
+      h('thead', null, h('tr', null, h('th', { text: 'Model' }), h('th', { class: 'n', text: 'Rank agreement' }),
+        h('th', { class: 'n', text: 'Average gap' }), h('th', { class: 'n', text: 'Leans' }), h('th', { class: 'n', text: 'Within 1 point' }))),
+      h('tbody', null, MODELS.map((m) => {
+        const theirs = mine.map((it) => it[m.id].interest);
+        const gaps = theirs.map((v, i) => v - you[i]);
+        const bias = avg(gaps), within = gaps.filter((g) => Math.abs(g) <= 1).length;
+        return h('tr', null, h('td', { class: 'key ' + m.id, text: m.name }),
+          h('td', { class: 'n', text: fmt(spearman(theirs, you)) }),
+          h('td', { class: 'n', text: fmt(avg(gaps.map(Math.abs))) }),
+          h('td', { class: 'n', text: `${bias >= 0 ? '+' : ''}${bias.toFixed(2)} ${Math.abs(bias) < 0.25 ? '(level)' : bias > 0 ? '(higher)' : '(lower)'}` }),
+          h('td', { class: 'n', text: `${within}/${mine.length}` }));
+      }))));
+
+    const hi = [...by[3], ...by[4]], mid2 = [...by[2], ...hi], lo2 = [...by[0], ...by[1], ...by[2]], lo = [...by[0], ...by[1]];
+    const qrows = [
+      ['Interest', 'you 3–4 vs you 0–2', 'interest', hi, lo2],
+      ['Interest', 'you 2–4 vs you 0–1', 'interest', mid2, lo],
+      ['Substantive', 'you 3–4 vs you 0–2', 'substantive', hi, lo2],
+      ['Watch term is a party', 'you 3–4 vs you 0–2', 'party', hi, lo2],
+      ['Buried detail', 'you 3–4 vs you 0–2', 'buried', hi, lo2],
+    ];
+    const aucTable = h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' },
+      h('thead', null, h('tr', null, h('th', { text: 'Question' }), h('th', { text: 'Separating' }), MODELS.map((m) => h('th', { class: 'n key ' + m.id, text: m.name })))),
+      h('tbody', null, qrows.map(([q, sep, field, pos, neg]) => h('tr', null,
+        h('td', { text: q }), h('td', { text: `${sep} (${pos.length} vs ${neg.length})` }),
+        MODELS.map((m) => h('td', { class: 'n', text: fmt(auc(pos.map((it) => it[m.id][field]), neg.map((it) => it[m.id][field]))) })))))));
+    const meanTable = h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' },
+      h('thead', null, h('tr', null, h('th', { text: 'Your rating' }), MODELS.map((m) => h('th', { class: 'n key ' + m.id, text: `${m.name} average` })))),
+      h('tbody', null, [4, 3, 2, 1, 0].map((c) => h('tr', null,
+        h('td', null, h('span', { class: 'pill', 'data-l': 'r' + c, text: `${c} · ${LEVELS[c]}` }), ` ${by[c].length}`),
+        MODELS.map((m) => h('td', { class: 'n', text: by[c].length ? avg(by[c].map((it) => it[m.id].interest)).toFixed(2) : '—' })))))));
+
+    const labelled = mine.slice().sort((a, b) => callOf(b.key) - callOf(a.key) || INDEX.get(a.key) - INDEX.get(b.key));
+    const allTable = h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl' },
+      h('thead', null, h('tr', null, h('th', { class: 'n', text: '#' }), h('th', { text: 'Document' }), h('th', { text: 'You' }),
+        MODELS.map((m) => h('th', { class: 'n key ' + m.id, text: m.name })), h('th', { text: 'Note' }))),
+      h('tbody', null, labelled.map((it) => {
+        const c = callOf(it.key);
+        const tr = h('tr', { class: 'go', tabindex: '0', title: 'Open this document' },
+          h('td', { class: 'n', text: String(INDEX.get(it.key) + 1).padStart(2, '0') }),
+          h('td', { class: 't', text: it.title }),
+          h('td', null, h('span', { class: 'pill', 'data-l': 'r' + c, text: `${c} · ${LEVELS[c]}` })),
+          MODELS.map((m) => h('td', { class: 'n', text: it[m.id].interest.toFixed(2) })),
+          h('td', { class: 'nt', text: (S.labels[it.key] && S.labels[it.key].note) || '' }));
+        const open = () => go(INDEX.get(it.key));
+        tr.addEventListener('click', open);
+        tr.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(); });
+        return tr;
+      }))));
+
+    const count = (s) => ITEMS.filter((it) => it.stratum === s).length;
+    const thin = ITEMS.filter((it) => it.seen === 'title').length;
+    const docketOnly = ITEMS.filter((it) => it.seen === 'docket').length;
+    root.replaceChildren(
+      head,
+      panel('Agreement with your ratings',
+        'Rank agreement is 1.00 when a model orders the documents exactly as you do and 0 when its order is unrelated to yours. Average gap is how far its score sits from yours on the 0–4 scale; Leans says whether it rates things higher or lower than you on average. Model scores are probability-weighted, so they fall between the whole numbers.',
+        agree),
+      panel('Interest scores, grouped by your rating',
+        'Each row is one of your ratings; the dotted line marks where a model agreeing with you would put its marks. Jev is circles, gemma4 squares, and the thick tick is each model’s average for that row. Click a mark to open the document.',
+        res.chart,
+        h('div', { class: 'legend' },
+          h('span', null, h('i', { class: 'sw jev' }), 'Jev'), h('span', null, h('i', { class: 'sw gemma' }), 'gemma4'),
+          h('span', null, h('i', { class: 'sw you' }), 'your rating'),
+          h('span', null, h('i', { class: 'sw thr' }), 'the alert line set below')),
+        h('div', { style: { marginTop: '14px' } }, meanTable)),
+      panel('If a score above a line sent the Slack alert',
+        'Your ratings stay what they are: this only asks where a model’s score would have to be cut to catch the documents you rated 3–4 without pinging the ones you rated 0–1.',
+        h('div', { class: 'thr-row' }, h('label', { for: 'thr', text: 'Alert when a model’s interest is at least' }), slider, res.out),
+        res.stats),
+      panel('Where the models part company with you', 'At the current line. Bold marks the model that disagreed.', res.misses),
+      panel('Which question tracks your judgement',
+        'The chance that a document from the first group scores higher than one from the second. 0.50 is a coin flip, 1.00 sorts them perfectly. A dash means one side is still empty.',
+        aucTable),
+      panel('Everything you’ve rated', null, allTable),
+      h('p', { class: 'foot', text: `About this sample: of the ${ITEMS.length} documents, ${count('disagree')} were picked because the two models disagreed most and ${count('top')} because one of them scored the document near the top; the rest are random picks (${count('ai')} from the AI-company searches, ${count('procedural')} from procedural filings, ${count('random')} from the whole run of ${META.total}). So these figures describe this sample, not the whole feed. ${docketOnly} documents gave the models docket details but no filing text, and ${thin} only a headline.` }),
+    );
+    renderThresholdParts();
+  }
+  function openExport() {
+    const rows = ITEMS.filter((it) => S.labels[it.key]).map((it) => ({
+      key: it.key, title: it.title, link: it.link, label: callOf(it.key), note: S.labels[it.key].note || '',
+      labeled_at: S.labels[it.key].labeled_at || null, jev_interest: it.jev.interest, gemma_interest: it.gemma.interest,
+    }));
+    $('export-text').value = JSON.stringify({ run: META.run, labels: rows }, null, 2);
+    $('copy').textContent = 'Copy';
+    const d = $('export');
+    if (typeof d.showModal === 'function') d.showModal(); else d.setAttribute('open', '');
+  }
+  $('copy').addEventListener('click', () => {
+    const ta = $('export-text'), btn = $('copy');
+    const fallback = () => { ta.focus(); ta.select(); btn.textContent = 'Selected: press ⌘C'; };
+    try { navigator.clipboard.writeText(ta.value).then(() => { btn.textContent = 'Copied'; }, fallback); } catch (e) { fallback(); }
+  });
+
+  /* ---------- wiring ---------- */
+  function renderAll() {
+    renderStatus();
+    renderProgress();
+    if (S.view === 'label') {
+      renderQueue();
+      if (built !== S.idx) buildCard();
+      updateCard();
+    } else {
+      renderResults();
+    }
+  }
+  $('tab-label').addEventListener('click', () => setView('label'));
+  $('tab-results').addEventListener('click', () => setView('results'));
+  const peek = $('peek');
+  peek.checked = S.peek;
+  peek.addEventListener('change', () => { S.peek = peek.checked; pref.set('peek', S.peek); if (S.view === 'label' && ITEMS.length) renderModels(); });
+  const wide = window.matchMedia('(min-width: 901px)');
+  const queue = $('queue');
+  queue.open = wide.matches;
+  wide.addEventListener('change', (e) => { if (e.matches) queue.open = true; });
+  document.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target;
+    if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.isContentEditable)) {
+      if (e.key === 'Escape') t.blur();
+      return;
+    }
+    if (S.view !== 'label' || !ITEMS.length || $('export').open) return;
+    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (/^[0-4]$/.test(k)) setLabel(Number(k));
+    else if (k === 'ArrowRight' || k === 'j') go(S.idx + 1);
+    else if (k === 'ArrowLeft' || k === 'k') go(S.idx - 1);
+    else if (k === 'u') nextUnlabelled();
+    else if (k === 'n') refs.note && refs.note.focus();
+    else return;
+    e.preventDefault();
+  });
+  window.addEventListener('pagehide', flushNote);
+
+  const models = META.models || {};
+  $('sub').textContent = `${ITEMS.length} of ${META.total || '?'} documents from run ${META.run || '?'} · Jev (${models.jev || 'jev'}) against gemma4 (${models.gemma || 'gemma4'}, run locally)`;
+  renderAll();
+  connect();
+})();
+</script>
+</body>
+</html>
