@@ -125,11 +125,21 @@ def cl_token():
     return t or (f.read_text().strip() if f.exists() else "")
 
 
+def _pace():
+    """claude_knowledge's shared CourtListener budget (newshound/clpace.py): every API attempt reserves a slot."""
+    parent = str(pathlib.Path(__file__).resolve().parent.parent)
+    if parent not in sys.path:
+        sys.path.append(parent)
+    import clpace
+    clpace.pace()
+
+
 def cl_get(path, **params):
     url = CL_API + path + ("?" + urllib.parse.urlencode(params, doseq=True) if params else "")
     req = urllib.request.Request(url, headers={"Authorization": f"Token {cl_token()}",
                                                "User-Agent": "newshound-triage (Protos)"})
     for attempt in range(4):
+        _pace()                               # each retry too: a 429's retry is a request like any other
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 return json.loads(r.read())
