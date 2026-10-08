@@ -56,10 +56,18 @@ class Base(unittest.TestCase):
         newshound.DB_PATH = os.path.join(self.tmp.name, "state.db")
         self.conn = newshound.initialize_db()
         self.slack = MagicMock()
+        import clpace
+        # Never the real state: the entry log the morning gather reads, the shared CourtListener pace window, or a
+        # real token (a test that reached the API spent 21s waiting on the live window, 2026-10-08). A test that
+        # needs a token patches its own.
         self.patches = [patch("newshound.get_slack_client", return_value=self.slack),
                         patch("newshound.time.sleep"),
                         patch("newshound.get_keywords", return_value=["crypto", "bitcoin"]),
-                        patch.dict(os.environ, {"LOCAL_TESTING": "False"})]
+                        patch.dict(os.environ, {"LOCAL_TESTING": "False"}),
+                        patch("newshound.ENTRY_LOG", os.path.join(self.tmp.name, "entries.jsonl")),
+                        patch("newshound._logged", None),
+                        patch.object(clpace, "pace", lambda *a, **k: 0.0),
+                        patch("newshound.courtlistener_token", return_value="")]
         for p in self.patches:
             p.start()
 
@@ -349,3 +357,51 @@ class Migration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EntryLog(unittest.TestCase):
+    """newshound logs every raw entry it reads (not CourtListener's) once, for the morning gather (2026-10-08)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+        self.path = os.path.join(self.tmp, "entries.jsonl")
+        self.old = newshound.ENTRY_LOG, newshound._logged
+        newshound.ENTRY_LOG, newshound._logged = self.path, None
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        newshound.ENTRY_LOG, newshound._logged = self.old
+
+    def lines(self):
+        with open(self.path) as fh:
+            return [json.loads(x) for x in fh]
+
+    def test_each_entry_is_logged_once_with_its_raw_guid_and_utc_time(self):
+        import time as _t
+        e = {"id": "https://www.justice.gov/usao-sdny/pr/x", "link": "https://www.justice.gov/usao-sdny/pr/x",
+             "title": "Man convicted of defrauding a crypto exchange", "summary": "",
+             "published": "Wed, 07 Oct 2026 16:00:00 +0000", "published_parsed": _t.gmtime(1791388800)}
+        feed = "http://www.justice.gov/atr/rss/atr_press.xml"
+        self.assertEqual(newshound.log_entries(feed, [e]), 1)
+        newshound._logged = None                      # a later run reloads the log from disk
+        self.assertEqual(newshound.log_entries(feed, [dict(e)]), 0, "an entry already logged is not logged again")
+        rows = self.lines()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["guid"], e["id"])
+        self.assertEqual(rows[0]["published_ts"], 1791388800, "feedparser's struct is UTC, read as UTC")
+
+    def test_courtlistener_feeds_are_not_logged(self):
+        self.assertEqual(newshound.log_entries("https://www.courtlistener.com/feed/search/?q=x",
+                                               [{"id": "a", "title": "t"}]), 0)
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_old_lines_are_pruned_and_a_cut_line_dropped(self):
+        import time as _t
+        with open(self.path, "w") as fh:
+            fh.write(json.dumps({"feed": "f", "guid": "old", "logged_ts": int(_t.time()) - 30 * 86400}) + "\n")
+            fh.write(json.dumps({"feed": "f", "guid": "new", "logged_ts": int(_t.time())}) + "\n")
+            fh.write('{"feed": "f", "gu')
+        logged = newshound._load_entry_log()
+        self.assertEqual(logged, {("f", "new")})
+        self.assertEqual([r["guid"] for r in self.lines()], ["new"])

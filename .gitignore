@@ -222,3 +222,7 @@ __marimo__/
 # Runtime alert state: rewritten every time an alert fires, so tracking it
 # guarantees a conflict on every pull and carries alert history into the repo.
 last_processed.db
+
+# the morning gather reads this log of every entry newshound sees (2026-10-08)
+entries.jsonl
+entries.jsonl.tmp

@@ -10,6 +10,7 @@ import re
 import socket
 import json
 import pathlib
+import calendar
 import urllib.parse
 import urllib.request
 
@@ -277,6 +278,74 @@ def record_key(conn, key, feed_url):
         conn.execute("INSERT OR IGNORE INTO sent_keys (key, feed_source) VALUES (?, ?)", (key, feed_url))
     conn.commit()
 
+# Every raw entry newshound reads from a non-CourtListener feed, logged once (2026-10-08). The morning gather reads
+# its feeds once a day; DOJ's national stream holds 25 items, a few hours of it, so a release newshound alerted on
+# (Spalletta, SDNY) had scrolled out before the 07:55 read. This log is what the gather merges back.
+ENTRY_LOG = os.environ.get("NEWSHOUND_ENTRY_LOG",
+                           os.path.join(os.path.dirname(os.path.abspath(__file__)), "entries.jsonl"))
+ENTRY_LOG_DAYS = 14
+_logged = None
+
+
+def _load_entry_log():
+    """{(feed, guid)} already logged, pruning lines older than ENTRY_LOG_DAYS (the file is rewritten only when
+    something was pruned). Read once per run."""
+    global _logged
+    if _logged is not None:
+        return _logged
+    _logged, keep, pruned = set(), [], 0
+    cutoff = time.time() - ENTRY_LOG_DAYS * 86400
+    try:
+        with open(ENTRY_LOG, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    pruned += 1                 # a line cut by a crash mid-write
+                    continue
+                if r.get("logged_ts", 0) < cutoff:
+                    pruned += 1
+                    continue
+                _logged.add((r.get("feed"), r.get("key") or r.get("guid")))
+                keep.append(line if line.endswith("\n") else line + "\n")
+    except FileNotFoundError:
+        return _logged
+    if pruned:
+        tmp = ENTRY_LOG + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.writelines(keep)
+        os.replace(tmp, ENTRY_LOG)
+    return _logged
+
+
+def log_entries(feed_url, entries):
+    """Append each entry of this feed not logged before: the raw guid, link, title, summary and published time, as
+    the feed served them (before check_and_alert rewrites an entry's id). CourtListener feeds are left out: the
+    gather reads and enriches those live. A write failure is printed, never fatal to the alerts."""
+    if "courtlistener.com" in feed_url:
+        return 0
+    seen = _load_entry_log()
+    now, rows = time.time(), []
+    for e in entries:
+        guid = e.get("id")               # as served: None when the feed gives no guid (the gather then hashes link+title)
+        key = guid or e.get("link")
+        if not key or (feed_url, key) in seen:
+            continue
+        pp = e.get("published_parsed") or e.get("updated_parsed")
+        rows.append({"feed": feed_url, "guid": guid, "key": key, "link": e.get("link"), "title": e.get("title"),
+                     "summary": e.get("summary"), "published": e.get("published") or e.get("updated"),
+                     "published_ts": calendar.timegm(pp) if pp else None,      # feedparser's struct is UTC
+                     "logged_ts": int(now)})
+        seen.add((feed_url, key))
+    if rows:
+        try:
+            with open(ENTRY_LOG, "a", encoding="utf-8") as fh:
+                fh.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+        except OSError as exc:
+            print(f"entry log not written ({type(exc).__name__}: {exc}); the morning gather may miss {len(rows)} entries")
+    return len(rows)
+
+
 def check_and_alert(feed_url, conn, sent_keys=None):
     processed_ids = get_last_processed_guid_from_db(conn, feed_url)
     if sent_keys is None:
@@ -286,6 +355,7 @@ def check_and_alert(feed_url, conn, sent_keys=None):
     first_sight = conn.execute("SELECT 1 FROM feeds_seen WHERE feed_source = ?",
                                (feed_url,)).fetchone() is None
     feed = parse_feed(feed_url)
+    log_entries(feed_url, feed.entries)
     # An empty feed is not an exception. Say so, or a dead source looks identical
     # to a quiet one -- which is how the SEC feeds hid for as long as they did.
     if getattr(feed, "status", 200) >= 400 or not feed.entries:
