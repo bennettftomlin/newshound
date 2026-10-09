@@ -395,6 +395,39 @@ def record_key(conn, key, feed_url):
 ENTRY_LOG = os.environ.get("NEWSHOUND_ENTRY_LOG",
                            os.path.join(os.path.dirname(os.path.abspath(__file__)), "entries.jsonl"))
 ENTRY_LOG_DAYS = 14
+# One line per run, written whether or not anything new arrived: the morning gather judges "is newshound running?"
+# from it. It used to judge from the entry log's newest line, which only moves when a feed has a new entry, so a quiet
+# night (no entry after 06:28) read as "stale" on 2026-10-09 while newshound had run every 10 minutes.
+RUN_LOG = os.environ.get("NEWSHOUND_RUN_LOG",
+                         os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs.jsonl"))
+RUN_LOG_DAYS = 14
+
+
+def record_run(started, finished, feeds, read, cl_read, cl_due, cl_total, failures):
+    """Append this run's heartbeat to RUN_LOG and prune lines older than RUN_LOG_DAYS. Never fatal to the run."""
+    row = {"started": round(started, 1), "finished": round(finished, 1), "feeds": feeds, "read": read,
+           "cl_read": cl_read, "cl_not_due": cl_total - cl_due, "cl_total": cl_total, "failures": failures}
+    try:
+        keep = []
+        cutoff = finished - RUN_LOG_DAYS * 86400
+        try:
+            with open(RUN_LOG, encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        if json.loads(line).get("finished", 0) >= cutoff:
+                            keep.append(line if line.endswith("\n") else line + "\n")
+                    except ValueError:
+                        continue
+        except FileNotFoundError:
+            pass
+        keep.append(json.dumps(row) + "\n")
+        tmp = RUN_LOG + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.writelines(keep)
+        os.replace(tmp, RUN_LOG)
+    except OSError as exc:
+        print(f"run log not written ({type(exc).__name__}: {exc})")
+    return row
 _logged = None
 
 
@@ -813,6 +846,8 @@ def run(conn, feed_urls, sent_keys=None):
     if sent_keys is None:
         sent_keys = get_sent_keys(conn)
     failures = []
+    started = time.time()
+    read_total = 0
     cl_total = cl_read = cl_skipped = 0
     for feed_url in feed_urls:
         cl = is_courtlistener(feed_url)
@@ -826,6 +861,7 @@ def run(conn, feed_urls, sent_keys=None):
                 time.sleep(CL_FEED_GAP)
         elif not feed_due(conn, feed_url, time.time()):
             continue
+        read_total += 1
         # One feed must never cost the rest of the run. socket.setdefaulttimeout
         # stops a dead server stalling us, but feedparser lets the TimeoutError
         # propagate, so before this guard the first slow feed aborted the loop and
@@ -866,7 +902,9 @@ def run(conn, feed_urls, sent_keys=None):
         if slow > 10:
             print(f"SLOW {slow:.0f}s: {feed_url}")
     if cl_total:
-        print(f"CourtListener: read {cl_read} of {cl_total} feeds due ({cl_skipped} not due)")
+        print(f"{time.strftime('%Y-%m-%d %H:%M')} CourtListener: read {cl_read} of {cl_total} feeds due "
+              f"({cl_skipped} not due)")
+    record_run(started, time.time(), len(feed_urls), read_total, cl_read, cl_total - cl_skipped, cl_total, len(failures))
     return failures
 
 

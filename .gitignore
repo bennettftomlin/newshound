@@ -226,3 +226,5 @@ last_processed.db
 # the morning gather reads this log of every entry newshound sees (2026-10-08)
 entries.jsonl
 entries.jsonl.tmp
+runs.jsonl
+runs.jsonl.tmp

@@ -66,6 +66,7 @@ class Base(unittest.TestCase):
                         patch("newshound.get_keywords", return_value=["crypto", "bitcoin"]),
                         patch.dict(os.environ, {"LOCAL_TESTING": "False"}),
                         patch("newshound.ENTRY_LOG", os.path.join(self.tmp.name, "entries.jsonl")),
+                        patch("newshound.RUN_LOG", os.path.join(self.tmp.name, "runs.jsonl")),
                         patch("newshound._logged", None),
                         patch.object(clpace, "pace", lambda *a, **k: 0.0),
                         patch("newshound.courtlistener_token", return_value="")]
@@ -961,4 +962,28 @@ class BareLinksWithoutApi(Base):
                                               "previously stored at the virtual currency..., 1:25-cv-05745"),
                          "United States v. Approximately 127,271 bitcoin (BTC) previously stored at the virtual currency...")
         self.assertEqual(newshound.caption_of("TradeSun, Inc. v. OpenAI OpCo, LLC"), "TradeSun, Inc. v. OpenAI OpCo, LLC")
+
+
+class RunLog(Base):
+    """Every run leaves a heartbeat, even when no feed had anything new (the gather's staleness test reads it)."""
+
+    def test_a_quiet_run_still_writes_a_heartbeat(self):
+        with patch.object(newshound, "check_and_alert", return_value=None), \
+             patch.object(newshound, "feed_due", return_value=True), \
+             patch.object(newshound, "cl_due", return_value=False):
+            newshound.run(self.conn, ["https://example.gov/a.xml", "https://www.courtlistener.com/docket/1/feed/"], set())
+        rows = [json.loads(l) for l in open(newshound.RUN_LOG)]
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertEqual((r["feeds"], r["read"], r["cl_total"], r["cl_read"], r["cl_not_due"]), (2, 1, 1, 0, 1))
+        self.assertGreaterEqual(r["finished"], r["started"])
+
+    def test_old_heartbeats_are_pruned_and_new_ones_appended(self):
+        old = {"started": 1.0, "finished": 1.0}
+        with open(newshound.RUN_LOG, "w") as fh:
+            fh.write(json.dumps(old) + "\n")
+        newshound.record_run(1e9, 1e9 + 5, 3, 3, 0, 0, 0, 0)
+        newshound.record_run(1e9 + 600, 1e9 + 605, 3, 3, 0, 0, 0, 1)
+        rows = [json.loads(l) for l in open(newshound.RUN_LOG)]
+        self.assertEqual([r["failures"] for r in rows], [0, 1], "the 1970 line is pruned, both new runs kept")
 
