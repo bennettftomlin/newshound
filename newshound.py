@@ -158,6 +158,10 @@ def get_sent_keys(conn):
         "SELECT key FROM cases_seen WHERE first_seen >= datetime('now', ?)", (f"-{CASE_MEMORY_DAYS} days",))}
     return keys
 
+# /Archives/edgar/data/<cik>/<18-digit accession folder>/... or .../<cik>/<0001234567-26-000123>.txt
+_SEC_ARCHIVES = re.compile(r"sec\.gov/Archives/edgar/data/\d+/(?:(\d{10})(\d{2})(\d{6})(?:/|$)|(\d{10}-\d{2}-\d{6}))")
+
+
 def canonical_key(item_id, link):
     """The identity of the DOCUMENT an item points at, whichever feed found it.
 
@@ -166,9 +170,11 @@ def canonical_key(item_id, link):
     /docket/<id>/<slug>/?order_by=desc#entry-<entry>. Both reduce to
     cl:<id>:<entry>[:<attachment>]. A minute entry has no entry number, only
     #minute-entry-<n>, and is cl:<id>:minute:<n> -- keyed on the docket page they
-    all link to, every minute entry after a docket's first went unsent. Anything
-    else is keyed on its link without query string or fragment, or on its feed id
-    when it has no link.
+    all link to, every minute entry after a docket's first went unsent. An EDGAR
+    filing (a sec.gov/Archives link) is sec:<accession>: the latest-filings feed
+    links one filing from each party's CIK folder, and edgar_feed records what it
+    posts under that key. Anything else is keyed on its link without query string
+    or fragment, or on its feed id when it has no link.
     """
     link = link or ""
     m = re.search(r"courtlistener\.com/docket/(\d+)/(\d+)/(?:(\d+)/)?", link)
@@ -180,6 +186,9 @@ def canonical_key(item_id, link):
     m = re.search(r"courtlistener\.com/docket/(\d+)/[^#]*#minute-entry-(\d+)", link)
     if m:
         return f"cl:{m.group(1)}:minute:{m.group(2)}"
+    m = _SEC_ARCHIVES.search(link)
+    if m:
+        return "sec:" + (m.group(4) or f"{m.group(1)}-{m.group(2)}-{m.group(3)}")
     if link and link not in BARE_COURTLISTENER:
         return re.split(r"[?#]", link)[0].rstrip("/")
     return f"id:{item_id}"
@@ -437,10 +446,14 @@ RUN_LOG = os.environ.get("NEWSHOUND_RUN_LOG",
 RUN_LOG_DAYS = 14
 
 
-def record_run(started, finished, feeds, read, cl_read, cl_due, cl_total, failures):
-    """Append this run's heartbeat to RUN_LOG and prune lines older than RUN_LOG_DAYS. Never fatal to the run."""
+def record_run(started, finished, feeds, read, cl_read, cl_due, cl_total, failures, edgar=None):
+    """Append this run's heartbeat to RUN_LOG and prune lines older than RUN_LOG_DAYS. Never fatal to the run.
+    edgar: the EDGAR latest-filings step's counts (edgar_feed.step: pages, filings, matched, posted, routine,
+    cap_hit, seeded, watch, status), when the run read it."""
     row = {"started": round(started, 1), "finished": round(finished, 1), "feeds": feeds, "read": read,
            "cl_read": cl_read, "cl_not_due": cl_total - cl_due, "cl_total": cl_total, "failures": failures}
+    if edgar is not None:
+        row["edgar"] = edgar
     try:
         keep = []
         cutoff = finished - RUN_LOG_DAYS * 86400
@@ -874,13 +887,50 @@ def record_read(conn, feed_url, ok, error, now):
         print(f"BACKOFF {span(wait)} after {failures} failures ({error}): {feed_url}")
 
 
-def run(conn, feed_urls, sent_keys=None):
+def post_alert(message):
+    """One Slack post to #newshound-feed (printed instead under LOCAL_TESTING)."""
+    if os.environ.get("LOCAL_TESTING") == "True":
+        print(f"🔌 [TEST MODE MOCK]: {message}")
+    else:
+        get_slack_client().chat_postMessage(text=message, channel="#newshound-feed")
+
+
+def post_pause():
+    """newshound's 10 s between Slack posts (none under LOCAL_TESTING)."""
+    if os.environ.get("LOCAL_TESTING") != "True":
+        time.sleep(10)
+
+
+# SEC EDGAR's latest-filings feed (edgar_feed.py, approved 2026-10-12): read first in each run, so a filing pings
+# within one launchd interval. Imported on first use, like the transport: a broken EDGAR source must cost the run
+# its EDGAR read, never its other 55 feeds.
+EDGAR_SOURCE = "EDGAR latest filings"
+
+
+def edgar_step(conn, sent_keys):
+    """-> (edgar_feed.step's summary, failure note or None)."""
+    import edgar_feed
+    return edgar_feed.step(conn, sent_keys, post_alert, post_pause)
+
+
+def run(conn, feed_urls, sent_keys=None, edgar=None):
     """Read every feed once -- CourtListener's only when due, any other only when not in backoff -- and return
-    [(feed url, error)] for those that failed."""
+    [(feed url, error)] for those that failed. edgar: the EDGAR step (edgar_step), run first; None skips it
+    (the tests' runs, a dry run of the feeds alone)."""
     if sent_keys is None:
         sent_keys = get_sent_keys(conn)
     failures = []
     started = time.time()
+    edgar_summary = None
+    if edgar is not None:
+        try:
+            edgar_summary, note = edgar(conn, sent_keys)
+            if note:
+                failures.append((EDGAR_SOURCE, note))
+        except Exception as exc:
+            failures.append((EDGAR_SOURCE, f"{type(exc).__name__}: {str(exc)[:160]}"))
+            edgar_summary = {"status": "crashed"}
+            print(f"EDGAR step failed ({type(exc).__name__}: {str(exc)[:200]}); the feeds are read as usual")
     read_total = 0
     cl_total = cl_read = cl_skipped = 0
     for feed_url in feed_urls:
@@ -938,14 +988,15 @@ def run(conn, feed_urls, sent_keys=None):
     if cl_total:
         print(f"{time.strftime('%Y-%m-%d %H:%M')} CourtListener: read {cl_read} of {cl_total} feeds due "
               f"({cl_skipped} not due)")
-    record_run(started, time.time(), len(feed_urls), read_total, cl_read, cl_total - cl_skipped, cl_total, len(failures))
+    record_run(started, time.time(), len(feed_urls), read_total, cl_read, cl_total - cl_skipped, cl_total, len(failures),
+               edgar=edgar_summary)
     return failures
 
 
 if __name__ == "__main__":
     conn = initialize_db()
     try:
-        failures = run(conn, get_rss_feeds(), get_sent_keys(conn))
+        failures = run(conn, get_rss_feeds(), get_sent_keys(conn), edgar=edgar_step)
     finally:
         conn.close()
     if failures:
