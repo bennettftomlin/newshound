@@ -8,6 +8,7 @@ longer had and had been failing since before the dedupe change.
 import json
 import socket
 import os
+import sys
 import tempfile
 import types
 import unittest
@@ -220,6 +221,13 @@ class BareLinks(Base):
         pacer.start()
         self.addCleanup(pacer.stop)
 
+    def over_transport(self, fake):
+        """The shared transport's one test seam: send() still builds its headers and redacts around `fake`, and
+        nothing reaches the network."""
+        sys.path.append(str(newshound.TRANSPORT_DIR))
+        import transport
+        return transport.installed(fake)
+
     def test_without_the_api_a_bare_entry_links_to_a_search_for_its_caption(self):
         self.seen(SEARCH)
         with patch("newshound.courtlistener_token", return_value=""):
@@ -233,31 +241,72 @@ class BareLinks(Base):
         self.seen(SEARCH)
         body = json.dumps({"results": [{"caseName": "Coinbase, Inc. v. Honscha",
                                         "docket_absolute_url": "/docket/74811111/coinbase-inc-v-honscha/"}]}).encode()
-        resp = MagicMock(); resp.read.return_value = body
-        resp.__enter__.return_value = resp
-        with patch("newshound.courtlistener_token", return_value="t"), \
-             patch("newshound.urllib.request.urlopen", return_value=resp) as opened:
+        sent = []
+
+        def fake(method, url, *, headers, data, json, timeout, allow_redirects):
+            sent.append((method, url, dict(headers), timeout))
+            return 200, {"content-type": "application/json"}, body
+        with patch("newshound.courtlistener_token", return_value="t-secret-token"), self.over_transport(fake):
             self.run_feed(SEARCH, feed(bare("Coinbase, Inc. v. Honscha", "2026-09-22"),
                                        bare("Coinbase, Inc. v. Honscha", "2026-09-23")))
         self.assertTrue(all("/docket/74811111/" in t for t in self.posted()), self.posted())
-        self.assertEqual(opened.call_count, 1, "one API call per feed, not per entry")
+        self.assertEqual(len(sent), 1, "one API call per feed, not per entry")
+        self.assertEqual(sent[0][0], "GET")
+        self.assertEqual(sent[0][2]["Authorization"], "Token t-secret-token", "the token goes in the header")
+        self.assertEqual(sent[0][2]["User-Agent"], "newshound (Protos)")
+        self.assertNotIn("t-secret-token", sent[0][1], "the token never goes in the URL")
         self.assertEqual(len(self.paced), 1, "the API call is paced through the shared window")
 
     def test_a_busy_shared_window_falls_back_to_a_caption_search_without_calling_the_api(self):
         import clpace
+        sent = []
         self.seen(SEARCH)
         with patch.object(clpace, "pace", side_effect=clpace.PaceWait("cl-pace: next slot in 900s")), \
-             patch("newshound.courtlistener_token", return_value="t"), \
-             patch("newshound.urllib.request.urlopen") as opened:
+             patch("newshound.courtlistener_token", return_value="t-secret-token"), \
+             self.over_transport(lambda *a, **k: sent.append(1)):
             self.run_feed(SEARCH, feed(bare("Coinbase, Inc. v. Honscha", "2026-09-22")))
-        self.assertEqual(opened.call_count, 0, "a refused slot never becomes an unpaced call")
+        self.assertEqual(sent, [], "a refused slot never becomes an unpaced call")
         self.assertIn("caseName", self.posted()[0])
 
     def test_an_api_failure_still_sends_a_usable_link(self):
         self.seen(SEARCH)
-        with patch("newshound.courtlistener_token", return_value="t"), \
-             patch("newshound.urllib.request.urlopen", side_effect=OSError("429")):
+        def down(*a, **k):
+            raise OSError("connection refused")
+        with patch("newshound.courtlistener_token", return_value="t-secret-token"), self.over_transport(down):
             self.run_feed(SEARCH, feed(bare("Yuyuan Gao v. Coinbase, Inc.", "2026-09-22")))
+        self.assertIn("caseName", self.posted()[0])
+
+    def test_a_429_is_recorded_for_every_process_and_not_retried(self):
+        import clpace
+        calls, noted = [], []
+
+        def throttled(method, url, *, headers, data, json, timeout, allow_redirects):
+            calls.append(url)
+            return 429, {"Retry-After": "Wed, 21 Oct 2099 07:28:00 GMT"}, b"slow down"
+        cl = types.SimpleNamespace(note_throttle=lambda ra, why="": noted.append((ra, why)))
+        self.seen(SEARCH)
+        with patch("newshound.courtlistener_token", return_value="t-secret-token"), self.over_transport(throttled), \
+             patch.object(clpace, "_cl_match", return_value=cl):
+            self.run_feed(SEARCH, feed(bare("Coinbase, Inc. v. Honscha", "2026-09-22")))
+        self.assertEqual(len(calls), 1, "a 429 is never retried")
+        self.assertEqual(len(noted), 1, "CourtListener's Retry-After is recorded for the other processes")
+        self.assertEqual(noted[0][0], 120.0, "the date-form Retry-After parsed and capped, not a crash")
+        self.assertIn("caseName", self.posted()[0])
+
+    def test_a_403_is_not_retried_and_the_token_never_reaches_the_log(self):
+        import contextlib, io
+        calls = []
+
+        def refused(method, url, *, headers, data, json, timeout, allow_redirects):
+            calls.append(url)
+            return 403, {}, b"Token t-secret-token refused"
+        out = io.StringIO()
+        self.seen(SEARCH)
+        with patch("newshound.courtlistener_token", return_value="t-secret-token"), self.over_transport(refused), \
+             contextlib.redirect_stdout(out):
+            self.run_feed(SEARCH, feed(bare("Coinbase, Inc. v. Honscha", "2026-09-22")))
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("t-secret-token", out.getvalue() + "".join(self.posted()))
         self.assertIn("caseName", self.posted()[0])
 
 

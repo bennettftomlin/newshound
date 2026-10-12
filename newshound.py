@@ -12,7 +12,7 @@ import json
 import pathlib
 import calendar
 import urllib.parse
-import urllib.request
+import sys
 
 # Cap any single feed fetch: feedparser has no timeout of its own, so one
 # unresponsive server would otherwise stall the whole run.
@@ -55,6 +55,33 @@ def _connect_fast(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_addres
 
 
 socket.create_connection = _connect_fast
+
+# The CourtListener API call below goes through the shared transport (tools/kb-graph/transport.py: one attempt, the
+# token redacted from every error, a 4xx not retried, Retry-After parsed in both forms and capped). Found from this
+# file's own location, like clpace.KB, and imported on first use, not at import: a broken transport must cost a bare
+# link its docket (a caption search is the fallback), not the run its 55 feeds.
+# The FEED reads stay on feedparser (permanent): it owns the request (conditional ETag / If-Modified-Since,
+# redirects, gzip, charset sniffing, the status and validators parse_feed's callers read), and it opens its
+# connections through socket.create_connection, which _connect_fast replaces for the 5 s per-address connect.
+TRANSPORT_DIR = pathlib.Path(__file__).resolve().parent.parent / "tools" / "kb-graph"
+
+
+def _transport():
+    if str(TRANSPORT_DIR) not in sys.path:
+        sys.path.append(str(TRANSPORT_DIR))
+    import transport
+    return transport
+
+
+def _note_courtlistener_throttle(exc):
+    """A 429 from the API is CourtListener's own Retry-After: record it so every process (the morning gather, kbpy's
+    courts verbs) waits it out, as cl_match.cl_get does. Never raises: the caller is already on its fallback."""
+    try:
+        import clpace
+        clpace._cl_match().note_throttle(getattr(exc, "retry_after", None), why="429 on newshound docket-link search")
+    except Exception:
+        pass
+
 
 DB_PATH = os.environ.get("NEWSHOUND_DB", "last_processed.db")
 BARE_COURTLISTENER = ("https://www.courtlistener.com", "https://www.courtlistener.com/")
@@ -338,14 +365,20 @@ def resolve_bare_link(entry, feed_url, siblings=None):
             try:
                 import clpace                # claude_knowledge's shared CourtListener budget (clpace.py)
                 clpace.pace()
-                req = urllib.request.Request(url, headers={"Authorization": f"Token {token}",
-                                                           "User-Agent": "newshound (Protos)"})
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    for result in json.loads(resp.read()).get("results", []):
-                        if result.get("caseName") and result.get("docket_absolute_url"):
-                            _docket_links[query].setdefault(
-                                result["caseName"], "https://www.courtlistener.com" + result["docket_absolute_url"])
+                transport = _transport()
+                # One attempt through the shared transport: the token is redacted from any error, a 4xx other
+                # than 429 is not retried (there is no retry here at all), and a redirect is followed as urlopen did.
+                resp = transport.send("GET", url, headers={"Authorization": f"Token {token}",
+                                                           "User-Agent": "newshound (Protos)"},
+                                      timeout=(CONNECT_TIMEOUT, 15), redact=(token,), allow_redirects=True,
+                                      what="newshound courtlistener docket-link search")
+                for result in resp.json().get("results", []):
+                    if result.get("caseName") and result.get("docket_absolute_url"):
+                        _docket_links[query].setdefault(
+                            result["caseName"], "https://www.courtlistener.com" + result["docket_absolute_url"])
             except Exception as exc:
+                if getattr(exc, "status", None) == 429:
+                    _note_courtlistener_throttle(exc)
                 print(f"CourtListener API unavailable for docket links ({type(exc).__name__}); using caption searches")
         if title in _docket_links[query]:
             BARE_HOW["api"] = BARE_HOW.get("api", 0) + 1

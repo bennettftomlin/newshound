@@ -13,28 +13,43 @@ import json
 import math
 import os
 import pathlib
+import sys
 import time
-import urllib.error
-import urllib.request
 
 from triage.questions import QUESTIONS
 
 LETTERS = "ABCDEFGHIJ"
 
 
+TRANSPORT_DIR = pathlib.Path(__file__).resolve().parents[2] / "tools" / "kb-graph"
+RETRY_STATUS = (429, 500, 502, 503, 504)
+
+
+def _transport():
+    """claude_knowledge's shared HTTP transport, found from this file's own location (newshound/triage/)."""
+    if str(TRANSPORT_DIR) not in sys.path:
+        sys.path.append(str(TRANSPORT_DIR))
+    import transport
+    return transport
+
+
 def _post(url, body, headers, timeout=120, tries=5):
-    data = json.dumps(body).encode()
+    """POST json through the shared transport: one attempt per loop turn. 429 and 5xx are retried, honouring
+    Retry-After in either form (delta-seconds or an HTTP date) capped at 30 s; a network error or timeout is retried
+    with a short back-off; any other status (a 401, a 403) raises at once, unretried."""
+    transport = _transport()
+    # the bearer key is scrubbed from every error the transport raises
+    secrets = [str(v).split()[-1] for k, v in headers.items() if k.lower() == "authorization" and str(v).split()]
     for attempt in range(tries):
-        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json", **headers})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read())
-        except urllib.error.HTTPError as e:
-            if e.code in (429, 500, 502, 503, 504) and attempt < tries - 1:
-                wait = float(e.headers.get("retry-after") or 2 * (attempt + 1))
-                time.sleep(min(wait, 30)); continue
-            raise RuntimeError(f"HTTP {e.code}: {e.read()[:300]!r}")
-        except (urllib.error.URLError, TimeoutError) as e:
+            r = transport.send("POST", url, json=body, headers={"Content-Type": "application/json", **headers},
+                               timeout=timeout, redact=[x for x in secrets if len(x) >= 4], what="newshound triage judge", agent="newshound-triage")
+            return r.json()
+        except transport.TransportError as e:
+            if e.kind == "http_status":
+                if e.status in RETRY_STATUS and attempt < tries - 1:
+                    time.sleep(min(e.retry_after if e.retry_after is not None else 2 * (attempt + 1), 30)); continue
+                raise RuntimeError(f"HTTP {e.status}: {e.body[:300]!r}")
             if attempt < tries - 1:
                 time.sleep(2 * (attempt + 1)); continue
             raise
