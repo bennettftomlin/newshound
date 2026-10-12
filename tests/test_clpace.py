@@ -47,6 +47,11 @@ def test_sources_cl_get_paces_every_attempt():
     cl = clpace._cl_match()
 
     class R:
+        status, headers = 200, {}        # the shared transport reads a reply's status and headers (2026-10-12)
+
+        def getcode(self):
+            return 200
+
         def __enter__(self):
             return self
 

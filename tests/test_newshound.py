@@ -290,7 +290,8 @@ class BareLinks(Base):
             self.run_feed(SEARCH, feed(bare("Coinbase, Inc. v. Honscha", "2026-09-22")))
         self.assertEqual(len(calls), 1, "a 429 is never retried")
         self.assertEqual(len(noted), 1, "CourtListener's Retry-After is recorded for the other processes")
-        self.assertEqual(noted[0][0], 120.0, "the date-form Retry-After parsed and capped, not a crash")
+        self.assertEqual(noted[0][0], 86400.0, "the date-form Retry-After parsed and capped at a day (as cl_match: "
+                                               "a day-cap 429 blocks every process for the day), not a crash")
         self.assertIn("caseName", self.posted()[0])
 
     def test_a_403_is_not_retried_and_the_token_never_reaches_the_log(self):

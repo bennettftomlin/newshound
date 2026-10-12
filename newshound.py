@@ -371,6 +371,7 @@ def resolve_bare_link(entry, feed_url, siblings=None):
                 resp = transport.send("GET", url, headers={"Authorization": f"Token {token}",
                                                            "User-Agent": "newshound (Protos)"},
                                       timeout=(CONNECT_TIMEOUT, 15), redact=(token,), allow_redirects=True,
+                                      retry_cap=86400,  # as cl_match: a day-cap 429 must block for the day
                                       what="newshound courtlistener docket-link search")
                 for result in resp.json().get("results", []):
                     if result.get("caseName") and result.get("docket_absolute_url"):
