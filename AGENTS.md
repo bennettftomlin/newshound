@@ -20,6 +20,7 @@ This file will be updated when the following details are confirmed:
 *   The precise command/workflow for testing or local simulation of feed changes.\n\n## 🧠 Internal Tools\nUse the memory tool to maintain context; prioritize consulting it at the start and end of every session.
 
 ## SEC EDGAR latest filings (edgar_feed.py, 2026-10-12)
-*   Read first in every run: pages EDGAR's getcurrent Atom feed down to the high-water mark in `edgar_state` (at most `MAX_PAGES`; more prints `EDGAR CAP HIT`), through the shared transport with the declared research User-Agent, paced in edgar_io's cross-process SEC pace table. The first run sets the mark and posts nothing.
+*   **Off by default since 2026-10-13** (it alerted too often): the entry point runs it only when `NEWSHOUND_EDGAR=1` is in the environment. Filings still reach the morning gather through its EDGAR full-text search.
+*   When on, read first in every run: pages EDGAR's getcurrent Atom feed down to the high-water mark in `edgar_state` (at most `MAX_PAGES`; more prints `EDGAR CAP HIT`), through the shared transport with the declared research User-Agent, paced in edgar_io's cross-process SEC pace table. The first run sets the mark and posts nothing.
 *   Gates: a watched CIK as any party (every CIK the KB types in derived/graph.sqlite, plus `edgar_watch.md`) or a company-name keyword (`edgar_keywords.md`). Priority forms post one by one; the rest go in one "routine" batch per run.
 *   Dedupe: `sec:<accession>` in `sent_keys` (newshound's `canonical_key` maps any sec.gov/Archives link to it). Counts go to `runs.jsonl` under `edgar`. Tests: `tests/test_edgar_feed.py` (offline; one real page in `tests/fixtures/`).

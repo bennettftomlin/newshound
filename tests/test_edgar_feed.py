@@ -462,9 +462,9 @@ class RunWiring(Base):
             row = json.loads(fh.readlines()[-1])
         self.assertEqual((row["edgar"]["status"], row["failures"]), ("crashed", 1))
 
-    def test_the_main_entry_point_wires_the_edgar_step(self):
-        src = pathlib.Path(newshound.__file__).read_text()
-        self.assertIn("edgar=edgar_step", src.split('if __name__ == "__main__":')[1])
+    def test_the_main_entry_point_runs_the_edgar_step_only_when_switched_on(self):
+        main = pathlib.Path(newshound.__file__).read_text().split('if __name__ == "__main__":')[1]
+        self.assertIn('edgar=edgar_step if os.environ.get("NEWSHOUND_EDGAR") == "1" else None', main)
 
 
 if __name__ == "__main__":

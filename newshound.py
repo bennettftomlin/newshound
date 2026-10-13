@@ -996,7 +996,10 @@ def run(conn, feed_urls, sent_keys=None, edgar=None):
 if __name__ == "__main__":
     conn = initialize_db()
     try:
-        failures = run(conn, get_rss_feeds(), get_sent_keys(conn), edgar=edgar_step)
+        # The EDGAR step is off by default (Bennett 2026-10-13: it alerted too often); NEWSHOUND_EDGAR=1 turns it
+        # back on. Filings still reach the morning gather through its full-text search.
+        failures = run(conn, get_rss_feeds(), get_sent_keys(conn),
+                       edgar=edgar_step if os.environ.get("NEWSHOUND_EDGAR") == "1" else None)
     finally:
         conn.close()
     if failures:
