@@ -11,6 +11,9 @@ import socket
 import json
 import pathlib
 import calendar
+import collections
+import datetime
+import html
 import urllib.parse
 import sys
 
@@ -141,6 +144,11 @@ def initialize_db():
     # record_read). No row: the last read succeeded.
     cursor.execute("CREATE TABLE IF NOT EXISTS feed_health "
                    "(feed_source TEXT PRIMARY KEY, failures INTEGER, skip_until REAL, last_error TEXT)")
+    # A '# filter: key' docket's routine entries, held for the daily roll-up (digest_step), and the last local date a
+    # roll-up went out. A held row is deleted only once its roll-up has posted.
+    cursor.execute("CREATE TABLE IF NOT EXISTS held_routine "
+                   "(key TEXT PRIMARY KEY, feed_source TEXT, title TEXT, link TEXT, summary TEXT, held_ts REAL)")
+    cursor.execute("CREATE TABLE IF NOT EXISTS digest_state (name TEXT PRIMARY KEY, last_date TEXT)")
     conn.commit()
     if cursor.execute("SELECT COUNT(*) FROM sent_keys").fetchone()[0] == 0:
         rows = cursor.execute("SELECT feed_source, item_id FROM processed_items").fetchall()
@@ -625,6 +633,16 @@ def handle_feed(feed_url, conn, sent_keys, feed, first_sight, keywords, processe
         save_validators(conn, feed_url, feed, keywords)
         return feed
 
+    mode = FEED_FILTERS.get(feed_url)
+    routine = []
+    if mode == "key" and new_items:
+        keyed = []
+        for item in new_items:
+            (keyed if key_filing(item)[0] else routine).append(item)
+        new_items = keyed
+        if routine:
+            print(f"FILTER key: {len(keyed)} key, {len(routine)} batched: {feed_url}")
+
     if new_items:
         print(f"Found {len(new_items)} matching items.")
         
@@ -658,17 +676,129 @@ def handle_feed(feed_url, conn, sent_keys, feed, first_sight, keywords, processe
                 sent_keys.add(item['_case'])
             if os.environ.get("LOCAL_TESTING") != "True":
                 time.sleep(10)
+    for item in routine:
+        if item['_key'] in sent_keys:
+            continue
+        conn.execute("INSERT OR IGNORE INTO held_routine (key, feed_source, title, link, summary, held_ts) "
+                     "VALUES (?, ?, ?, ?, ?, ?)", (item['_key'], feed_url, item.get('title', ''), item.get('link', ''),
+                                                   item.get('summary', ''), time.time()))
+        update_last_processed_guid_in_db(conn, feed_url, item['id'], item['_key'])
+        sent_keys.add(item['_key'])
+    conn.commit()
     # Last, once every item is sent and recorded: validators saved earlier would let a run stopped mid-feed come back
     # to a 304 and never send the rest.
     save_validators(conn, feed_url, feed, keywords)
     return feed
 
 def get_rss_feeds():
+    """The feed URLs in rss.md, in order. A line may end in a marker after whitespace and '#' ('<url>  # filter: key',
+    FEED_FILTERS); the URL alone is the feed's identity, so adding or removing a marker never gives it a new key (a new
+    key would mean a quiet first pass). A line starting with '#' is a comment."""
     # utf-8-sig strips a real BOM; the old lstrip('ufeff') only stripped the
     # literal characters u, f and e from the start of the URL.
     with open("rss.md", encoding='utf-8-sig') as f:
         lines = [line.strip() for line in f]
-    return [line for line in lines if line]
+    urls = []
+    FEED_FILTERS.clear()
+    for line in lines:
+        if not line or line.startswith("#"):
+            continue
+        parts = re.split(r"\s+#", line, maxsplit=1)
+        url, marker = parts[0].strip(), (parts[1] if len(parts) > 1 else "")
+        m = re.match(r"filter:\s*(\S+)", marker.strip())
+        if m:
+            if m.group(1) in FILTER_MODES:
+                FEED_FILTERS[url] = m.group(1)
+            else:
+                print(f"UNKNOWN FILTER {m.group(1)!r} (known: {', '.join(FILTER_MODES)}): every entry posts: {url}")
+        urls.append(url)
+    return urls
+
+
+# --- Busy dockets: post the key filings, batch the rest (Bennett, 2026-10-21) ------------------------------------
+# The 127,271 BTC forfeiture docket (E.D.N.Y. 1:25-cv-05745, docket 71639393) posted 168 entries in two weeks, 10 to
+# 30 a day: terror-victim creditor groups' answers, claims, crossclaims and counsel notices. A docket line in rss.md
+# marked '# filter: key' posts one by one only what moves the case -- the court's own entries (orders, opinions,
+# judgments, minute entries), appeals, motions other than counsel housekeeping, and filings by the government or a
+# party named in FILTER_PRINCIPALS -- and holds everything else for ONE daily roll-up per docket (Bennett: "once a
+# day ~9am"), posted by the first run at or after DIGEST_HOUR local time, naming how many, of what kind and by whom.
+# A held entry is recorded as sent at once, so no feed posts it alone; it waits in held_routine until its roll-up
+# posts, so a restart or a missed run never loses it.
+FILTER_MODES = ("key",)
+DIGEST_HOUR = 9                  # local time: the roll-up goes out with the first run at or after 09:00
+FEED_FILTERS = {}                # feed url -> mode, filled by get_rss_feeds()
+FILTER_PRINCIPALS = re.compile(r"lubian|chen\s+zhi|prince\s+(?:group|holding)", re.I)
+_COURT = re.compile(r"^(?:electronic\s+|amended\s+|sealed\s+)?(?:order|memorandum|opinion|judgment|decision|"
+                    r"scheduling order|report and recommendation|mandate|usca|stipulation and order|"
+                    r"(?:clerk'?s\s+)?entry of default)\b", re.I)
+_APPEAL = re.compile(r"\bnotice of (?:interlocutory\s+|cross[- ])?appeal\b|\bleave to appeal\b|\bpetition for "
+                     r"(?:writ|review)\b", re.I)
+_MOTION = re.compile(r"^(?:[\w'.-]+\s+){0,3}motion\b", re.I)
+_HOUSEKEEPING = re.compile(r"withdraw(?:al)?\s+as\s+(?:attorney|counsel)|pro\s+hac\s+vice|substitut\w*\s+(?:of\s+)?"
+                           r"(?:attorney|counsel)|notice of appearance|electronic(?:ally)? fil|admission|"
+                           r"index to (?:the )?record on appeal|consent to electronic", re.I)
+_GOVERNMENT = re.compile(r"^(?:the\s+)?(?:plaintiff\s+)?(?:united states(?: of america)?|usa|government)\b", re.I)
+
+
+def docket_text(entry):
+    """A docket feed entry's docket text, tags and runs of space dropped."""
+    s = re.sub(r"<[^>]+>", " ", str(entry.get("summary") or ""))
+    return re.sub(r"\s+", " ", html.unescape(s)).strip()
+
+
+def filer_of(text):
+    """'ANSWER to Complaint by Gold Star Claimants re [1] ...' -> 'Gold Star Claimants' (the 'by' clause before 're',
+    '[', '(' or a comma), or ''."""
+    m = re.search(r"\bby\s+(.{2,80}?)(?=\s+re\b|\s*\[|\s*\(|,|\.\s|$)", text[:300])
+    return m.group(1).strip() if m else ""
+
+
+def filing_kind(text):
+    """'ANSWER to Complaint by ...' -> 'answer': the docket text's first words up to 'by', 're', 'to' or '['."""
+    m = re.match(r"(.{1,40}?)(?=\s+(?:by|re|to|on|of|for)\b|\s*\[|\s*\(|:|$)", text)
+    return (m.group(1) if m else text[:30]).strip().lower() or "entry"
+
+
+def key_filing(entry):
+    """-> (True, why) for an entry a '# filter: key' docket posts one by one, else (False, '')."""
+    text = docket_text(entry)
+    filer = filer_of(text)
+    if _HOUSEKEEPING.search(text[:200]):             # counsel and clerk housekeeping, the court's own grants included
+        return False, ""
+    if "#minute-entry-" in str(entry.get("link") or entry.get("id") or ""):
+        return True, "the court's minute entry"
+    if _COURT.match(text):
+        return True, "the court's own entry"
+    if _APPEAL.search(text[:200]):
+        return True, "an appeal"
+    if _GOVERNMENT.match(filer):
+        return True, "the government's filing"
+    if FILTER_PRINCIPALS.search(filer) or FILTER_PRINCIPALS.search(text[:120]):
+        return True, "a principal's filing"
+    if _MOTION.match(text):
+        return True, "a motion"
+    return False, ""
+
+
+def batch_message(items, since=None):
+    """One Slack post for a filtered docket's routine entries: how many, of what kind, by whom, and the docket.
+    since: the earliest held time (a datetime), said in the header."""
+    title = str(items[0].get("title") or "")
+    caption = title.split(" in ", 1)[1] if " in " in title else title
+    kinds, filers = collections.Counter(), collections.Counter()
+    for it in items:
+        text = docket_text(it)
+        kinds[filing_kind(text)] += 1
+        f = filer_of(text)
+        if f:
+            filers[f] += 1
+    link = docket_link(str(items[0].get("link") or "")) or str(items[0].get("link") or "")
+    kind_s = ", ".join(f"{k} {n}" for k, n in kinds.most_common(6)) + (" and more" if len(kinds) > 6 else "")
+    by_s = "; ".join(f for f, _n in filers.most_common(6)) + (f"; +{len(filers) - 6} more" if len(filers) > 6 else "")
+    when = f" since {since.strftime('%a %d %b %H:%M')}" if since else ""
+    return (f"🗂️ Daily roll-up: {len(items)} routine filing{'s' if len(items) != 1 else ''} in {caption}{when} "
+            f"('# filter: key')\n"
+            f"Kinds: {kind_s}" + (f"\nBy: {by_s}" if by_s else "") + f"\nDocket: {link}")
 
 
 # --- How often each CourtListener feed is read (2026-10-08) -------------------------------------------------------
@@ -907,6 +1037,30 @@ def post_pause():
 EDGAR_SOURCE = "EDGAR latest filings"
 
 
+def digest_step(conn, now=None):
+    """Post each filtered docket's held routine entries as one roll-up, once a local day, with the first run at or after
+    DIGEST_HOUR; delete a docket's held rows only after its post went out. -> number of roll-ups posted."""
+    now = now or datetime.datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    row = conn.execute("SELECT last_date FROM digest_state WHERE name = 'routine'").fetchone()
+    if now.hour < DIGEST_HOUR or (row and row[0] == today):
+        return 0
+    posted = 0
+    feeds = [r[0] for r in conn.execute("SELECT DISTINCT feed_source FROM held_routine ORDER BY feed_source")]
+    for feed_url in feeds:
+        held = conn.execute("SELECT key, title, link, summary, held_ts FROM held_routine WHERE feed_source = ? "
+                            "ORDER BY held_ts", (feed_url,)).fetchall()
+        items = [{"title": t, "link": l, "summary": s_} for _k, t, l, s_, _ts in held]
+        post_alert(batch_message(items, since=datetime.datetime.fromtimestamp(held[0][4])))
+        conn.executemany("DELETE FROM held_routine WHERE key = ?", [(k,) for k, *_ in held])
+        conn.commit()
+        posted += 1
+        post_pause()
+    conn.execute("INSERT OR REPLACE INTO digest_state (name, last_date) VALUES ('routine', ?)", (today,))
+    conn.commit()
+    return posted
+
+
 def edgar_step(conn, sent_keys):
     """-> (edgar_feed.step's summary, failure note or None)."""
     import edgar_feed
@@ -931,6 +1085,13 @@ def run(conn, feed_urls, sent_keys=None, edgar=None):
             failures.append((EDGAR_SOURCE, f"{type(exc).__name__}: {str(exc)[:160]}"))
             edgar_summary = {"status": "crashed"}
             print(f"EDGAR step failed ({type(exc).__name__}: {str(exc)[:200]}); the feeds are read as usual")
+    try:
+        rolled = digest_step(conn)
+        if rolled:
+            print(f"ROLL-UP: posted {rolled} daily routine roll-up(s)")
+    except Exception as exc:
+        failures.append(("daily roll-up", f"{type(exc).__name__}: {str(exc)[:160]}"))
+        print(f"daily roll-up failed ({type(exc).__name__}: {str(exc)[:200]}); held entries kept for the next run")
     read_total = 0
     cl_total = cl_read = cl_skipped = 0
     for feed_url in feed_urls:

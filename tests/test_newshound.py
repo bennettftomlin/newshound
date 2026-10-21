@@ -1037,3 +1037,107 @@ class RunLog(Base):
         rows = [json.loads(l) for l in open(newshound.RUN_LOG)]
         self.assertEqual([r["failures"] for r in rows], [0, 1], "the 1970 line is pruned, both new runs kept")
 
+
+
+BUSY = "https://www.courtlistener.com/docket/71639393/feed/"
+
+
+def busy_entry(n, text, minute=False):
+    frag = f"minute-entry-{n}" if minute else f"entry-{n}"
+    url = f"https://www.courtlistener.com/docket/71639393/united-states-v-approximately/?order_by=desc#{frag}"
+    return {"id": url, "link": url, "title": f"Entry #{n} in United States v. Approximately 127,271 bitcoin, "
+            "1:25-cv-05745", "summary": text}
+
+
+class KeyFilter(Base):
+    """'# filter: key' on a docket line (Bennett, 2026-10-21): key filings one by one, the rest in one post."""
+
+    def test_rss_marker_keeps_the_url_and_sets_the_mode(self):
+        rss = os.path.join(self.tmp.name, "rss.md")
+        with open(rss, "w") as f:
+            f.write(f"# a comment\n{DOCKET}\n{BUSY}   # filter: key\n{SEC}  # filter: nonsense\n")
+        cwd = os.getcwd()
+        os.chdir(self.tmp.name)
+        try:
+            with patch("builtins.print") as said:
+                urls = newshound.get_rss_feeds()
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(urls, [DOCKET, BUSY, SEC])            # the URL alone: no new key, no quiet first pass
+        self.assertEqual(newshound.FEED_FILTERS, {BUSY: "key"})
+        self.assertTrue(any("UNKNOWN FILTER" in str(c) for c in said.call_args_list))
+
+    def busy_read(self):
+        newshound.FEED_FILTERS.clear()
+        newshound.FEED_FILTERS[BUSY] = "key"
+        self.addCleanup(newshound.FEED_FILTERS.clear)
+        self.seen(BUSY)
+        parsed = feed(
+            busy_entry(650, "ORDER: LuBian shall respond to the Government's 504 Motion to Compel by October 9."),
+            busy_entry(651, "MOTION to Compel as to LuBian by United States of America. (Brown, Christopher)"),
+            busy_entry(652, "ANSWER to [399] Answer to Complaint by Fishbeck Claimants. (Katz, Seth)"),
+            busy_entry(653, "NOTICE by Chairnoff Claimants re [406] Answer to Complaint"),
+            busy_entry(654, "MOTION to Withdraw as Attorney by the Law Offices of Joshua M. Ambush"),
+            busy_entry(655, "ORDER granting 541 Motion for Leave to Appear Pro Hac Vice.", minute=True),
+            busy_entry(656, "NOTICE OF APPEAL as to [506] Order on Motion for Summary Judgment by Ath Leepinyo"),
+            busy_entry(657, "Letter MOTION for Extension of Time as to [504] MOTION to Compel by LuBian."))
+        self.run_feed(BUSY, parsed)
+        return parsed
+
+    def test_key_filings_post_now_and_the_rest_wait_for_the_roll_up(self):
+        parsed = self.busy_read()
+        posts = self.posted()
+        self.assertEqual(len(posts), 4, posts)                # the order, the government, the appeal, LuBian's motion
+        self.assertTrue(all(p.startswith("🚨") for p in posts), posts)
+        held = self.conn.execute("SELECT COUNT(*) FROM held_routine").fetchone()[0]
+        self.assertEqual(held, 4)                             # answer, notice, withdrawal, pro hac vice grant
+        self.slack.chat_postMessage.reset_mock()
+        self.run_feed(BUSY, parsed)                           # held entries are recorded as sent: never posted alone
+        self.assertEqual(self.posted(), [])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM held_routine").fetchone()[0], 4)
+
+    def test_the_roll_up_posts_once_a_day_from_nine(self):
+        self.busy_read()
+        self.slack.chat_postMessage.reset_mock()
+        day = __import__("datetime").datetime(2026, 10, 22, 8, 55)
+        self.assertEqual(newshound.digest_step(self.conn, day), 0)          # before 09:00: nothing
+        self.assertEqual(self.posted(), [])
+        self.assertEqual(newshound.digest_step(self.conn, day.replace(hour=9, minute=7)), 1)
+        posts = self.posted()
+        self.assertEqual(len(posts), 1)
+        self.assertTrue(posts[0].startswith("🗂️ Daily roll-up: 4 routine filings"), posts[0])
+        self.assertIn("Fishbeck Claimants", posts[0])
+        self.assertIn("Docket: https://www.courtlistener.com/docket/71639393/", posts[0])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM held_routine").fetchone()[0], 0)
+        self.slack.chat_postMessage.reset_mock()
+        self.assertEqual(newshound.digest_step(self.conn, day.replace(hour=15)), 0)   # once a day
+        self.assertEqual(self.posted(), [])
+
+    def test_a_failed_roll_up_keeps_the_held_entries(self):
+        self.busy_read()
+        self.slack.chat_postMessage.side_effect = RuntimeError("slack down")
+        day = __import__("datetime").datetime(2026, 10, 22, 9, 7)
+        with self.assertRaises(RuntimeError):
+            newshound.digest_step(self.conn, day)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM held_routine").fetchone()[0], 4)
+        self.slack.chat_postMessage.side_effect = None
+        self.assertEqual(newshound.digest_step(self.conn, day.replace(minute=17)), 1)   # the next run sends it
+
+    def test_an_unmarked_docket_still_posts_every_entry(self):
+        newshound.FEED_FILTERS.clear()
+        self.seen(BUSY)
+        self.run_feed(BUSY, feed(busy_entry(660, "ANSWER to Complaint by Fishbeck Claimants."),
+                                 busy_entry(661, "NOTICE by Chairnoff Claimants re [406] Answer")))
+        self.assertEqual(len([p for p in self.posted() if p.startswith("🚨")]), 2)
+
+    def test_key_filing_reasons(self):
+        cases = {
+            "MEMORANDUM AND ORDER: the government's 197 motions to strike are granted": "the court's own entry",
+            "STATUS REPORT Regarding TRIA Claimants' Claims by United States of America": "the government's filing",
+            "MOTION for Reconsideration re: Memorandum and Order [506], filed by Ravi Anand.": "a motion",
+            "CLAIM Verified Claim by Iranian Terrorism Victims.": "",
+            "NOTICE of Appearance by Joshua Samuel Sohn on behalf of Iranian Terrorism Victims": "",
+            "Electronic Index to Record on Appeal sent to US Court of Appeals.": "",
+        }
+        got = {t: newshound.key_filing(busy_entry(1, t))[1] for t in cases}
+        self.assertEqual(got, cases)
