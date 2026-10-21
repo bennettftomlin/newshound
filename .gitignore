@@ -228,3 +228,6 @@ entries.jsonl
 entries.jsonl.tmp
 runs.jsonl
 runs.jsonl.tmp
+
+# macOS Finder metadata
+.DS_Store
