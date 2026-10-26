@@ -442,7 +442,9 @@ def cl_docket(docket_id):
         case = cached
     else:
         try:
-            d = cl_get(f"dockets/{key}/", fields="case_name,court_id,docket_number,date_filed,nature_of_suit,cause")
+            # the whole record (about 2 KB), no `fields`: the one request every caller makes for a docket by id
+            # (cl_match.docket), so cl_get's response cache answers it for kbpy and the nightly alike, and theirs for us
+            d = cl_get(f"dockets/{key}/")
         except CLBudget:
             raise
         except Exception as e:                        # noqa: BLE001
