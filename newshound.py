@@ -246,6 +246,29 @@ def get_keywords():
     # everywhere, alerting on every item in every feed.
     return [line for line in lines if line]
 
+def get_excluded_dockets():
+    """CourtListener docket ids newshound never alerts on (excluded_dockets.md): a docket id or a docket URL per line,
+    a reason after '#'. A false match a feed's query cannot keep out -- q=htx finds Clark v. Housing Alliance HTX, a
+    Houston housing case, on every filing (Bennett, 2026-11-03). No file means none."""
+    try:
+        with open("excluded_dockets.md", encoding="utf-8-sig") as f:
+            lines = [re.split(r"\s+#|^#", line, maxsplit=1)[0].strip() for line in f]
+    except FileNotFoundError:
+        return frozenset()
+    ids = set()
+    for line in filter(None, lines):
+        m = re.fullmatch(r"(\d+)", line) or _DOCKET_ID.search(line)
+        if m:
+            ids.add(m.group(1))
+        else:
+            print(f"UNREADABLE EXCLUSION {line!r} (want a docket id or URL): ignored")
+    return frozenset(ids)
+
+def excluded_docket(link, excluded):
+    """The excluded docket id a CourtListener link belongs to, else None."""
+    m = _DOCKET_ID.search(link or "")
+    return m.group(1) if m and m.group(1) in excluded else None
+
 def build_keyword_pattern(keywords):
     # One alternation so each entry is scanned once. The lookarounds act as
     # word boundaries that also work for keywords with leading/trailing
@@ -583,6 +606,8 @@ def handle_feed(feed_url, conn, sent_keys, feed, first_sight, keywords, processe
         print(f"EMPTY feed (http={getattr(feed, 'status', '?')}): {feed_url}")
     keyword_pattern = build_keyword_pattern(keywords)
     per_case = new_case_feed(feed_url)
+    excluded = get_excluded_dockets()
+    skipped = 0
     new_items = []
 
     for entry in feed.entries:
@@ -601,6 +626,9 @@ def handle_feed(feed_url, conn, sent_keys, feed, first_sight, keywords, processe
             continue
         if per_case and entry['_case'] in sent_keys:
             continue                   # later filings in a case already announced
+        if excluded_docket(entry.get('link', ''), excluded):
+            skipped += 1
+            continue
 
         # 2. FILTERING: Check the requirement
         # A CourtListener URL is ALREADY the filter: /feed/search/?q=... carries the
@@ -633,6 +661,8 @@ def handle_feed(feed_url, conn, sent_keys, feed, first_sight, keywords, processe
         save_validators(conn, feed_url, feed, keywords)
         return feed
 
+    if skipped:
+        print(f"EXCLUDED: {skipped} entr{'y' if skipped == 1 else 'ies'} of excluded dockets not alerted: {feed_url}")
     mode = FEED_FILTERS.get(feed_url)
     routine = []
     if mode == "key" and new_items:
@@ -655,6 +685,11 @@ def handle_feed(feed_url, conn, sent_keys, feed, first_sight, keywords, processe
             link = item.get('link', '')
             if link in BARE_COURTLISTENER:
                 link = resolve_bare_link(item, feed_url, siblings=feed.entries)
+                # Its docket is known only now. Recorded as processed, not as sent: this feed never resolves it again.
+                if (docket := excluded_docket(link, excluded)):
+                    print(f"EXCLUDED: a bare-link entry of docket {docket} not alerted: {feed_url}")
+                    update_last_processed_guid_in_db(conn, feed_url, item['id'])
+                    continue
             if per_case:
                 link = docket_link(link) or link
                 message = f"🚨 NEW CASE! Title: {item['title']}\nLink: {link}"

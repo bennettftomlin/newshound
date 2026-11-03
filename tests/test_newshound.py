@@ -1141,3 +1141,68 @@ class KeyFilter(Base):
         }
         got = {t: newshound.key_filing(busy_entry(1, t))[1] for t in cases}
         self.assertEqual(got, cases)
+
+
+HTX = "https://www.courtlistener.com/feed/search/?type=r&type=r&q=htx&order_by=entry_date_filed+desc&"
+
+
+class ExcludedDockets(Base):
+    """excluded_dockets.md (Bennett, 2026-11-03): a docket no feed alerts on, Clark v. Housing Alliance HTX first."""
+
+    def setUp(self):
+        super().setUp()
+        cwd = os.getcwd()
+        os.chdir(self.tmp.name)                               # newshound reads excluded_dockets.md from its cwd
+        self.addCleanup(os.chdir, cwd)
+
+    def exclusions(self, text):
+        with open("excluded_dockets.md", "w") as f:
+            f.write(text)
+
+    def test_the_list_takes_ids_urls_and_comments(self):
+        self.exclusions("# a comment\n73703252   # Clark v. Housing Alliance HTX\n\n"
+                        "https://www.courtlistener.com/docket/71639393/22/slug/\nnot-a-docket\n")
+        with patch("builtins.print") as said:
+            self.assertEqual(newshound.get_excluded_dockets(), {"73703252", "71639393"})
+        self.assertTrue(any("UNREADABLE EXCLUSION" in str(c) for c in said.call_args_list))
+
+    def test_no_file_excludes_nothing(self):
+        self.exclusions("")
+        os.remove("excluded_dockets.md")
+        self.assertEqual(newshound.get_excluded_dockets(), frozenset())
+
+    def test_an_excluded_docket_never_posts_and_the_rest_of_the_feed_does(self):
+        self.exclusions("73703252   # Clark v. Housing Alliance HTX\n")
+        self.seen(HTX)
+        parsed = feed(doc(22, title="Clark v. Housing Alliance HTX", docket=73703252),
+                      doc(23, title="Clark v. Housing Alliance HTX", docket=73703252),
+                      doc(5, title="In re HTX Trading", docket=70000001))
+        self.run_feed(HTX, parsed)
+        posts = self.posted()
+        self.assertEqual(len(posts), 1, posts)
+        self.assertIn("In re HTX Trading", posts[0])
+        self.slack.chat_postMessage.reset_mock()
+        self.exclusions("")                                    # removed from the list: its next filing alerts again
+        self.run_feed(HTX, feed(doc(24, title="Clark v. Housing Alliance HTX", docket=73703252)))
+        self.assertEqual(len(self.posted()), 1)
+
+    def test_an_excluded_docket_is_kept_out_of_a_busy_dockets_roll_up(self):
+        self.exclusions("71639393\n")
+        newshound.FEED_FILTERS.clear()
+        newshound.FEED_FILTERS[BUSY] = "key"
+        self.addCleanup(newshound.FEED_FILTERS.clear)
+        self.seen(BUSY)
+        self.run_feed(BUSY, feed(busy_entry(700, "ORDER granting the motion."),
+                                 busy_entry(701, "ANSWER to Complaint by Fishbeck Claimants.")))
+        self.assertEqual(self.posted(), [])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM held_routine").fetchone()[0], 0)
+
+    def test_a_bare_link_resolved_to_an_excluded_docket_does_not_post(self):
+        self.exclusions("73703252\n")
+        self.seen(HTX)
+        sibling = doc(22, title="Clark v. Housing Alliance HTX", docket=73703252)
+        entry = bare("Clark v. Housing Alliance HTX", "Mon, 02 Nov 2026 00:00:00 -0000")
+        self.run_feed(HTX, feed(sibling, entry))
+        self.assertEqual(self.posted(), [])
+        ident = newshound.item_identifier(dict(entry))
+        self.assertIn(ident, newshound.get_last_processed_guid_from_db(self.conn, HTX))   # not resolved again
