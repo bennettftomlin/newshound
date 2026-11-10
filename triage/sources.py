@@ -59,6 +59,19 @@ def read_lines(name):
         return [l.strip() for l in f if l.strip()]
 
 
+def feed_urls(lines):
+    """rss.md's lines -> the feed URLs, as newshound's get_rss_feeds reads them: a line starting with '#' is a comment,
+    and a marker after whitespace and '#' ('<url>   # filter: key') is not part of the URL. Read whole, the busy
+    docket's line was fetched as '.../feed/   # filter: key' and failed InvalidURL in every morning gather."""
+    out = []
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        out.append(re.split(r"\s+#", line, maxsplit=1)[0].strip())
+    return out
+
+
 def keyword_pattern(keywords):
     alternation = "|".join(re.escape(k) for k in keywords)
     return re.compile(rf"(?<!\w)(?:{alternation})(?!\w)", re.IGNORECASE)
@@ -538,7 +551,7 @@ def collect(log=print):
             budget.append(str(e))
             log(f"  ! CourtListener budget spent, no further API calls this run: {e}")
             return None
-    for url in read_lines("rss.md"):
+    for url in feed_urls(read_lines("rss.md")):
         label = feed_label(url)
         try:
             feed = parse_feed(url)
